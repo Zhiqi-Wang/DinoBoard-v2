@@ -1,0 +1,45 @@
+# OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Build
+build/
+dist/
+*.egg-info/
+CMakeFiles/
+CMakeCache.txt
+cmake-build-*/
+compile_commands.json
+*.o
+*.so
+*.dll
+*.lib
+*.a
+
+# Training outputs
+games/*/runs/
+games/*/model/random
+
+# ONNX Runtime (local dependency)
+third_party/onnxruntime-*/
+
+# Secrets
+*.pem
+*.ppk
+.env
+
+# Logs
+*.log
+*.tmp
