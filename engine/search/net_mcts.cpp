@@ -139,7 +139,7 @@ ActionId NetMcts::search_root(
 
   std::vector<Node> nodes;
   nodes.reserve(static_cast<size_t>(std::max(512, cfg_.simulations * 2)));
-  nodes.push_back(Node{value_model.current_player(root), false, 0, 0.0f, {}});
+  nodes.push_back(Node{root.current_player(), false, 0, 0.0f, {}});
 
   auto expand_node = [&](Node& node, const IGameState& state) -> float {
     const auto legal = rules.legal_actions(state);
@@ -183,7 +183,7 @@ ActionId NetMcts::search_root(
       cfg_.root_dirichlet_alpha,
       cfg_.root_dirichlet_epsilon,
       static_cast<std::uint64_t>(t0.time_since_epoch().count()) ^
-          static_cast<std::uint64_t>(value_model.current_player(root) + 13));
+          static_cast<std::uint64_t>(root.current_player() + 13));
 
   const int simulations = std::max(1, cfg_.simulations);
   for (int sim = 0; sim < simulations; ++sim) {
@@ -243,7 +243,7 @@ ActionId NetMcts::search_root(
                   }
                 }
                 if (rerouted_child < 0) {
-                  nodes.push_back(Node{value_model.current_player(*sim_state), false, 0, 0.0f, {}});
+                  nodes.push_back(Node{sim_state->current_player(), false, 0, 0.0f, {}});
                   rerouted_child = static_cast<int>(nodes.size()) - 1;
                   if (parent_edge.child < 0 || !parent_edge.has_child_state_hash) {
                     parent_edge.child = rerouted_child;
@@ -271,7 +271,7 @@ ActionId NetMcts::search_root(
         }
       }
       skip_limiter_once = false;
-      if (value_model.is_terminal(*sim_state)) {
+      if (sim_state->is_terminal()) {
         leaf_value = value_model.terminal_value_for_player(*sim_state, cur.to_play);
         break;
       }
@@ -301,7 +301,7 @@ ActionId NetMcts::search_root(
 
       const ActionId chosen_action = cur.edges[best_edge].action;
       const UndoToken undo_tok = rules.do_action_fast(*sim_state, chosen_action);
-      const int next_player = value_model.current_player(*sim_state);
+      const int next_player = sim_state->current_player();
       const StateHash64 next_hash = sim_state->state_hash(true);
       int chosen_child = nodes[cur_idx].edges[best_edge].child;
 

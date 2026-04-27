@@ -21,8 +21,8 @@ ArenaMatchResult run_arena_match(
 
   std::array<const ArenaPlayerConfig*, 2> configs = {&player0_config, &player1_config};
 
-  while (!value_model.is_terminal(*state) && ply < max_game_plies) {
-    const int player = value_model.current_player(*state);
+  while (!state->is_terminal() && ply < max_game_plies) {
+    const int player = state->current_player();
     const auto legal = rules.legal_actions(*state);
     if (legal.empty()) break;
 
@@ -50,7 +50,7 @@ ArenaMatchResult run_arena_match(
 
   result.total_plies = ply;
 
-  if (value_model.is_terminal(*state)) {
+  if (state->is_terminal()) {
     const int num_players = state->num_players();
     float best_val = -2.0f;
     int best_player = -1;
