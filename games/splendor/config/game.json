@@ -1,15 +1,18 @@
 {
   "game_id": "splendor",
-  "display_name": "Splendor",
+  "display_name": "\u7480\u74a8\u5b9d\u77f3",
+  "has_web": true,
   "players": {
     "min": 2,
     "max": 4
   },
   "action_space": 70,
-  "feature_dim": 294,
-  "has_hidden_info": true,
-  "has_random_nodes": true,
-  "random_node_modes": ["peek", "truncate", "nopeek"],
+  "feature_dim": 295,
+  "random_node_modes": [
+    "peek",
+    "truncate",
+    "nopeek"
+  ],
   "training": {
     "simulations": 200,
     "c_puct": 1.4,
@@ -27,11 +30,20 @@
     "episodes_per_step": 400,
     "batch_size": 512,
     "learning_rate": 0.001,
-    "steps": 20000
+    "steps": 20000,
+    "tail_solve_enabled": true,
+    "tail_solve_start_ply": 60,
+    "tail_solve_depth_limit": 6,
+    "tail_solve_node_budget": 100000,
+    "peek_steps": 0
   },
   "network": {
     "type": "mlp",
-    "hidden_layers": [256, 256, 128],
+    "hidden_layers": [
+      256,
+      256,
+      128
+    ],
     "activation": "relu"
   }
 }

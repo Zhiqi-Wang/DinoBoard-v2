@@ -9,7 +9,7 @@
 namespace board_ai::tictactoe {
 
 constexpr int kActionSpace = 9;
-constexpr int kFeatureDim = 27;
+constexpr int kFeatureDim = 28;
 
 class TicTacToeFeatureEncoder final : public IFeatureEncoder {
  public:
@@ -22,11 +22,6 @@ class TicTacToeFeatureEncoder final : public IFeatureEncoder {
       const std::vector<ActionId>& legal_actions,
       std::vector<float>* features,
       std::vector<float>* legal_mask) const override;
-};
-
-class TicTacToeStateValueModel final : public IStateValueModel {
- public:
-  float terminal_value_for_player(const IGameState& state, int perspective_player) const override;
 };
 
 }  // namespace board_ai::tictactoe

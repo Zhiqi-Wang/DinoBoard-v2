@@ -1,0 +1,54 @@
+{
+  "game_id": "quoridor",
+  "display_name": "Quoridor",
+  "players": {
+    "min": 2,
+    "max": 2
+  },
+  "action_space": 209,
+  "feature_dim": 295,
+  "training": {
+    "simulations": 800,
+    "simulations_start": 200,
+    "eval_temperature": 0.1,
+    "gating_accept_win_rate": 0.6,
+    "c_puct": 1.4,
+    "temperature": 1.0,
+    "temperature_initial": 1.0,
+    "temperature_final": 0.15,
+    "temperature_decay_plies": 40,
+    "dirichlet_alpha": 0.15,
+    "dirichlet_epsilon": 0.25,
+    "dirichlet_on_first_n_plies": 16,
+    "max_game_plies": 200,
+    "episodes_per_step": 100,
+    "batch_size": 2048,
+    "learning_rate": 0.001,
+    "steps": 3000,
+    "warm_start_episodes": 800,
+    "warm_start_epochs": 10,
+    "warm_start_heuristic": true,
+    "warm_start_temperature": 3.0,
+    "heuristic_temperature": 0.0,
+    "free_heuristic_temperature": 0.0,
+    "tail_solve_enabled": false,
+    "tail_solve_start_ply": 30,
+    "tail_solve_depth_limit": 10,
+    "tail_solve_node_budget": 200000,
+    "tail_solve_margin_weight": 0.01,
+    "heuristic_guidance_steps": 200,
+    "training_filter_steps": 1000,
+    "training_filter_initial_ratio": 0.8,
+    "auxiliary_score": false,
+    "auxiliary_score_weight": 0.5
+  },
+  "network": {
+    "type": "mlp",
+    "hidden_layers": [
+      256,
+      256,
+      256
+    ],
+    "activation": "relu"
+  }
+}

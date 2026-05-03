@@ -1,0 +1,6 @@
+{
+  "difficulty_overrides": {
+    "casual": {"temperature": 0.3},
+    "expert": {"temperature": 0.1}
+  }
+}

@@ -32,7 +32,7 @@ class OnnxPolicyValueEvaluator final : public search::IPolicyValueEvaluator {
       int perspective_player,
       const std::vector<ActionId>& legal_actions,
       std::vector<float>* priors,
-      float* value) const override;
+      std::vector<float>* values) const override;
 
  private:
   std::string model_path_;

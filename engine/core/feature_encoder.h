@@ -17,14 +17,18 @@ class IFeatureEncoder {
       const std::vector<ActionId>& legal_actions,
       std::vector<float>* features,
       std::vector<float>* legal_mask) const = 0;
-  virtual ActionId canonicalize_action(ActionId action, int perspective_player) const {
-    (void)perspective_player;
-    return action;
-  }
-  virtual ActionId decanonicalize_action(ActionId canonical_action, int perspective_player) const {
-    (void)perspective_player;
-    return canonical_action;
-  }
 };
+
+inline void fill_legal_mask(
+    int action_space,
+    const std::vector<ActionId>& legal_actions,
+    std::vector<float>* legal_mask) {
+  legal_mask->assign(static_cast<size_t>(action_space), 0.0f);
+  for (ActionId a : legal_actions) {
+    if (a >= 0 && a < action_space) {
+      (*legal_mask)[static_cast<size_t>(a)] = 1.0f;
+    }
+  }
+}
 
 }  // namespace board_ai

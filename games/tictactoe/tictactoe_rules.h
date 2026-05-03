@@ -15,8 +15,6 @@ class TicTacToeRules final : public IGameRules {
   void undo_action(IGameState& state, const UndoToken& token) const override;
 
  private:
-  static const TicTacToeState* as_state(const IGameState& state);
-  static TicTacToeState* as_state(IGameState& state);
   static int evaluate_winner(const TicTacToeState& state);
 };
 

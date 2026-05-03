@@ -32,15 +32,36 @@ sources = [
     "bindings/py_engine.cpp",
     "engine/core/action_constraint.cpp",
     "engine/search/net_mcts.cpp",
+    "engine/search/tail_solver.cpp",
     "engine/infer/onnx_policy_value_evaluator.cpp",
     "engine/runtime/selfplay_runner.cpp",
     "engine/runtime/arena_runner.cpp",
+    "engine/runtime/nopeek_support.cpp",
+    "engine/runtime/heuristic_runner.cpp",
     "games/tictactoe/tictactoe_state.cpp",
     "games/tictactoe/tictactoe_rules.cpp",
     "games/tictactoe/tictactoe_net_adapter.cpp",
+    "games/tictactoe/tictactoe_register.cpp",
     "games/splendor/splendor_state.cpp",
     "games/splendor/splendor_rules.cpp",
     "games/splendor/splendor_net_adapter.cpp",
+    "games/splendor/splendor_register.cpp",
+    "games/azul/azul_state.cpp",
+    "games/azul/azul_rules.cpp",
+    "games/azul/azul_net_adapter.cpp",
+    "games/azul/azul_register.cpp",
+    "games/quoridor/quoridor_state.cpp",
+    "games/quoridor/quoridor_rules.cpp",
+    "games/quoridor/quoridor_net_adapter.cpp",
+    "games/quoridor/quoridor_register.cpp",
+    "games/loveletter/loveletter_state.cpp",
+    "games/loveletter/loveletter_rules.cpp",
+    "games/loveletter/loveletter_net_adapter.cpp",
+    "games/loveletter/loveletter_register.cpp",
+    "games/coup/coup_state.cpp",
+    "games/coup/coup_rules.cpp",
+    "games/coup/coup_net_adapter.cpp",
+    "games/coup/coup_register.cpp",
 ]
 
 include_dirs = [
@@ -48,23 +69,38 @@ include_dirs = [
     get_pybind_include(),
 ]
 
-define_macros = [
-    ("DINOBOARD_GAME_TICTACTOE", "1"),
-    ("DINOBOARD_GAME_SPLENDOR", "1"),
-]
+define_macros = []
 
-with_onnx = os.environ.get("BOARD_AI_WITH_ONNX", "0") == "1"
 onnx_root = os.environ.get("BOARD_AI_ONNXRUNTIME_ROOT", "")
+with_onnx = os.environ.get("BOARD_AI_WITH_ONNX", "")
 library_dirs = []
 libraries = []
+
+if with_onnx == "":
+    # Auto-detect: try common homebrew path, then check env
+    for candidate in ["/opt/homebrew", "/usr/local"]:
+        if ((Path(candidate) / "include" / "onnxruntime_c_api.h").exists()
+                or (Path(candidate) / "include" / "onnxruntime" / "onnxruntime_c_api.h").exists()):
+            onnx_root = onnx_root or candidate
+            with_onnx = "1"
+            break
+    if with_onnx != "1":
+        with_onnx = "0"
+
+with_onnx = with_onnx == "1"
 
 define_macros.append(("BOARD_AI_WITH_ONNX", "1" if with_onnx else "0"))
 if with_onnx:
     if not onnx_root:
         raise RuntimeError("BOARD_AI_WITH_ONNX=1 requires BOARD_AI_ONNXRUNTIME_ROOT")
     include_dirs.append(str(Path(onnx_root) / "include"))
+    onnx_inner = Path(onnx_root) / "include" / "onnxruntime"
+    if onnx_inner.is_dir():
+        include_dirs.append(str(onnx_inner))
     library_dirs.append(str(Path(onnx_root) / "lib"))
     libraries.append("onnxruntime")
+else:
+    print("WARNING: Building without ONNX runtime. MCTS will use uniform policy (no neural network guidance).")
 
 ext = Extension(
     name="dinoboard_engine",

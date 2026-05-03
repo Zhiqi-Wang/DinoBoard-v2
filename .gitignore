@@ -32,6 +32,16 @@ compile_commands.json
 games/*/runs/
 games/*/model/random
 
+# Top-level training run artifacts (checkpoints, train.log, per-step ONNX
+# snapshots). Each run can be hundreds of MB to GB. The deployed
+# best_model.onnx under games/<id>/model/ IS committed so clones are
+# playable out of the box — but the full training history stays local.
+runs/
+
+# Random-fallback ONNX cache (stale: the random-model fallback was removed
+# but the cache files linger).
+games/.random_models/
+
 # ONNX Runtime (local dependency)
 third_party/onnxruntime-*/
 
@@ -43,3 +53,7 @@ third_party/onnxruntime-*/
 # Logs
 *.log
 *.tmp
+
+# Ad-hoc dev artifacts (debugging screenshots, scratch notes).
+截图/
+screenshots/

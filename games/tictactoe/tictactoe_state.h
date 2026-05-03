@@ -22,9 +22,9 @@ struct UndoRecord {
   std::array<int, kPlayers> prev_scores{};
 };
 
-struct TicTacToeState final : public IGameState {
+struct TicTacToeState final : public CloneableState<TicTacToeState> {
   int current_player_ = 0;
-  int winner = -1;
+  int winner_ = -1;
   bool terminal = false;
   int move_count = 0;
   std::array<int, kPlayers> scores{0, 0};
@@ -34,13 +34,14 @@ struct TicTacToeState final : public IGameState {
 
   TicTacToeState();
 
-  std::unique_ptr<IGameState> clone_state() const override;
   StateHash64 state_hash(bool include_hidden_rng) const override;
   int current_player() const override { return current_player_; }
   bool is_terminal() const override { return terminal; }
   int num_players() const override { return kPlayers; }
+  int winner() const override { return winner_; }
 
-  void reset_with_seed(std::uint64_t seed);
+
+  void reset_with_seed(std::uint64_t seed) override;
 };
 
 }  // namespace board_ai::tictactoe

@@ -1,7 +1,5 @@
 #include "tictactoe_rules.h"
 
-#include <stdexcept>
-
 namespace board_ai::tictactoe {
 
 namespace {
@@ -14,17 +12,6 @@ constexpr int kLines[8][3] = {
 
 }  // namespace
 
-const TicTacToeState* TicTacToeRules::as_state(const IGameState& state) {
-  auto p = dynamic_cast<const TicTacToeState*>(&state);
-  if (!p) throw std::invalid_argument("TicTacToeRules expects TicTacToeState");
-  return p;
-}
-
-TicTacToeState* TicTacToeRules::as_state(IGameState& state) {
-  auto p = dynamic_cast<TicTacToeState*>(&state);
-  if (!p) throw std::invalid_argument("TicTacToeRules expects TicTacToeState");
-  return p;
-}
 
 int TicTacToeRules::evaluate_winner(const TicTacToeState& state) {
   for (const auto& line : kLines) {
@@ -39,14 +26,14 @@ int TicTacToeRules::evaluate_winner(const TicTacToeState& state) {
 }
 
 bool TicTacToeRules::validate_action(const IGameState& state, ActionId action) const {
-  const TicTacToeState* s = as_state(state);
+  const TicTacToeState* s = &checked_cast<TicTacToeState>(state);
   if (s->terminal) return false;
   if (action < 0 || action >= kBoardSize) return false;
   return s->board[static_cast<size_t>(action)] == kEmptyCell;
 }
 
 std::vector<ActionId> TicTacToeRules::legal_actions(const IGameState& state) const {
-  const TicTacToeState* s = as_state(state);
+  const TicTacToeState* s = &checked_cast<TicTacToeState>(state);
   std::vector<ActionId> out;
   if (s->terminal) return out;
   out.reserve(kBoardSize);
@@ -59,15 +46,14 @@ std::vector<ActionId> TicTacToeRules::legal_actions(const IGameState& state) con
 }
 
 UndoToken TicTacToeRules::do_action_fast(IGameState& state, ActionId action) const {
-  TicTacToeState* s = as_state(state);
+  TicTacToeState* s = &checked_cast<TicTacToeState>(state);
   UndoToken token{};
-  token.actor = static_cast<std::uint32_t>(s->current_player_);
   token.undo_depth = static_cast<std::uint32_t>(s->undo_stack.size());
 
   UndoRecord rec{};
   rec.action = action;
   rec.prev_player = s->current_player_;
-  rec.prev_winner = s->winner;
+  rec.prev_winner = s->winner_;
   rec.prev_terminal = s->terminal;
   rec.prev_move_count = s->move_count;
   rec.prev_scores = s->scores;
@@ -80,12 +66,12 @@ UndoToken TicTacToeRules::do_action_fast(IGameState& state, ActionId action) con
 
   const int w = evaluate_winner(*s);
   if (w >= 0) {
-    s->winner = w;
+    s->winner_ = w;
     s->terminal = true;
     s->scores[w] = 1;
     s->scores[1 - w] = -1;
   } else if (s->move_count >= kBoardSize) {
-    s->winner = -1;
+    s->winner_ = -1;
     s->terminal = true;
     s->scores = {0, 0};
   } else {
@@ -95,7 +81,7 @@ UndoToken TicTacToeRules::do_action_fast(IGameState& state, ActionId action) con
 }
 
 void TicTacToeRules::undo_action(IGameState& state, const UndoToken& token) const {
-  TicTacToeState* s = as_state(state);
+  TicTacToeState* s = &checked_cast<TicTacToeState>(state);
   if (s->undo_stack.empty()) return;
   UndoRecord rec = s->undo_stack.back();
   s->undo_stack.pop_back();
@@ -103,7 +89,7 @@ void TicTacToeRules::undo_action(IGameState& state, const UndoToken& token) cons
     s->board[static_cast<size_t>(rec.action)] = static_cast<std::int8_t>(kEmptyCell);
   }
   s->current_player_ = rec.prev_player;
-  s->winner = rec.prev_winner;
+  s->winner_ = rec.prev_winner;
   s->terminal = rec.prev_terminal;
   s->move_count = rec.prev_move_count;
   s->scores = rec.prev_scores;

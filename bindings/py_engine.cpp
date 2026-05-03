@@ -9,25 +9,16 @@
 #include <vector>
 
 #include "../engine/core/game_interfaces.h"
+#include "../engine/core/game_registry.h"
 #include "../engine/core/feature_encoder.h"
 #include "../engine/infer/onnx_policy_value_evaluator.h"
 #include "../engine/runtime/selfplay_runner.h"
 #include "../engine/runtime/arena_runner.h"
+#include "../engine/runtime/heuristic_runner.h"
+#include "../engine/runtime/nopeek_support.h"
 #include "../engine/search/net_mcts.h"
 #include "../engine/search/root_noise.h"
 #include "../engine/search/temperature_schedule.h"
-
-#ifdef DINOBOARD_GAME_TICTACTOE
-#include "../games/tictactoe/tictactoe_state.h"
-#include "../games/tictactoe/tictactoe_rules.h"
-#include "../games/tictactoe/tictactoe_net_adapter.h"
-#endif
-
-#ifdef DINOBOARD_GAME_SPLENDOR
-#include "../games/splendor/splendor_state.h"
-#include "../games/splendor/splendor_rules.h"
-#include "../games/splendor/splendor_net_adapter.h"
-#endif
 
 namespace py = pybind11;
 
@@ -35,43 +26,172 @@ using namespace board_ai;
 
 namespace {
 
-struct GameBundle {
-  std::unique_ptr<IGameState> state;
-  std::unique_ptr<IGameRules> rules;
-  std::unique_ptr<IStateValueModel> value_model;
-  std::unique_ptr<IFeatureEncoder> encoder;
-  std::string game_id;
-};
+std::any py_to_any(const py::handle& obj);
 
-GameBundle create_game(const std::string& game_id, std::uint64_t seed) {
-  GameBundle b;
-  b.game_id = game_id;
-
-#ifdef DINOBOARD_GAME_TICTACTOE
-  if (game_id == "tictactoe") {
-    auto s = std::make_unique<tictactoe::TicTacToeState>();
-    s->reset_with_seed(seed);
-    b.state = std::move(s);
-    b.rules = std::make_unique<tictactoe::TicTacToeRules>();
-    b.value_model = std::make_unique<tictactoe::TicTacToeStateValueModel>();
-    b.encoder = std::make_unique<tictactoe::TicTacToeFeatureEncoder>();
-    return b;
+AnyMap py_dict_to_any_map(const py::dict& d) {
+  AnyMap m;
+  for (const auto& [k, v] : d) {
+    const std::string key = py::cast<std::string>(k);
+    m[key] = py_to_any(v);
   }
-#endif
+  return m;
+}
 
-#ifdef DINOBOARD_GAME_SPLENDOR
-  if (game_id == "splendor") {
-    auto s = std::make_unique<splendor::SplendorState>();
-    s->reset_with_seed(seed);
-    b.state = std::move(s);
-    b.rules = std::make_unique<splendor::SplendorRules>();
-    b.value_model = std::make_unique<splendor::SplendorStateValueModel>();
-    b.encoder = std::make_unique<splendor::SplendorFeatureEncoder>();
-    return b;
+std::any py_to_any(const py::handle& obj) {
+  if (py::isinstance<py::bool_>(obj)) return py::cast<bool>(obj);
+  if (py::isinstance<py::int_>(obj))  return py::cast<int>(obj);
+  if (py::isinstance<py::float_>(obj)) return py::cast<double>(obj);
+  if (py::isinstance<py::str>(obj))   return py::cast<std::string>(obj);
+  if (py::isinstance<py::dict>(obj)) {
+    return py_dict_to_any_map(py::reinterpret_borrow<py::dict>(obj));
   }
-#endif
+  if (py::isinstance<py::list>(obj) || py::isinstance<py::tuple>(obj)) {
+    // Inspect first element to decide vector<int> vs vector<any>.
+    py::sequence seq = py::reinterpret_borrow<py::sequence>(obj);
+    bool all_int = !seq.empty() ? py::isinstance<py::int_>(seq[0]) : false;
+    if (all_int) {
+      for (const auto& item : seq) {
+        if (!py::isinstance<py::int_>(item) || py::isinstance<py::bool_>(item)) {
+          all_int = false;
+          break;
+        }
+      }
+    }
+    if (all_int) {
+      std::vector<int> out;
+      out.reserve(seq.size());
+      for (const auto& item : seq) out.push_back(py::cast<int>(item));
+      return out;
+    }
+    std::vector<std::any> out;
+    out.reserve(seq.size());
+    for (const auto& item : seq) out.push_back(py_to_any(item));
+    return out;
+  }
+  throw std::runtime_error("py_to_any: unsupported Python type");
+}
 
-  throw std::runtime_error("Unknown game: " + game_id);
+py::object any_to_py(const std::any& val) {
+  if (val.type() == typeid(int))
+    return py::cast(std::any_cast<int>(val));
+  if (val.type() == typeid(float))
+    return py::cast(std::any_cast<float>(val));
+  if (val.type() == typeid(double))
+    return py::cast(std::any_cast<double>(val));
+  if (val.type() == typeid(bool))
+    return py::cast(std::any_cast<bool>(val));
+  if (val.type() == typeid(std::string))
+    return py::cast(std::any_cast<std::string>(val));
+  if (val.type() == typeid(std::vector<int>))
+    return py::cast(std::any_cast<std::vector<int>>(val));
+  if (val.type() == typeid(std::vector<std::any>)) {
+    py::list lst;
+    for (const auto& item : std::any_cast<std::vector<std::any>>(val))
+      lst.append(any_to_py(item));
+    return lst;
+  }
+  if (val.type() == typeid(std::vector<AnyMap>)) {
+    py::list lst;
+    for (const auto& item : std::any_cast<std::vector<AnyMap>>(val)) {
+      py::dict d;
+      for (const auto& [k, v] : item) d[py::cast(k)] = any_to_py(v);
+      lst.append(d);
+    }
+    return lst;
+  }
+  if (val.type() == typeid(AnyMap)) {
+    py::dict d;
+    for (const auto& [k, v] : std::any_cast<AnyMap>(val))
+      d[py::cast(k)] = any_to_py(v);
+    return d;
+  }
+  throw std::runtime_error(
+      std::string("any_to_py: unsupported type: ") + val.type().name());
+}
+
+py::dict sample_to_py(const runtime::SelfplaySample& s) {
+  py::dict d;
+  d["ply"] = s.ply;
+  d["player"] = s.player;
+  d["action_id"] = s.action_id;
+  d["z"] = s.z;
+  d["z_values"] = s.z_values;
+  d["policy_action_ids"] = s.policy_action_ids;
+  d["policy_action_visits"] = s.policy_action_visits;
+  d["features"] = s.features;
+  d["legal_mask"] = s.legal_mask;
+  d["tail_solved"] = s.tail_solved;
+  d["auxiliary_score"] = s.auxiliary_score;
+  return d;
+}
+
+py::dict result_to_py(const runtime::SelfplayEpisodeResult& result) {
+  py::list samples;
+  for (const auto& s : result.samples)
+    samples.append(sample_to_py(s));
+
+  py::dict out;
+  out["winner"] = result.winner;
+  out["draw"] = result.draw;
+  out["total_plies"] = result.total_plies;
+  out["samples"] = samples;
+  out["tail_solve_attempts"] = result.tail_solve_attempts;
+  out["tail_solve_completed"] = result.tail_solve_completed;
+  out["tail_solve_successes"] = result.tail_solve_successes;
+  out["tail_solve_total_ms"] = result.tail_solve_total_ms;
+  out["traversal_stops"] = result.total_traversal_stops;
+
+  if (!result.custom_stats.empty()) {
+    py::dict stats;
+    for (const auto& [k, v] : result.custom_stats) stats[py::cast(k)] = v;
+    out["custom_stats"] = stats;
+  }
+
+  if (result.trace_enabled) {
+    out["trace_perspective"] = result.trace_perspective;
+    // initial_observation: game-defined AnyMap
+    py::dict init_obs;
+    for (const auto& [k, v] : result.initial_observation) init_obs[py::cast(k)] = any_to_py(v);
+    out["initial_observation"] = init_obs;
+    // initial_belief_snapshot: tracker's serialize() output
+    py::dict init_bs;
+    for (const auto& [k, v] : result.initial_belief_snapshot) init_bs[py::cast(k)] = any_to_py(v);
+    out["initial_belief_snapshot"] = init_bs;
+    // observation_trace: list of per-ply records
+    py::list trace_list;
+    for (const auto& t : result.observation_trace) {
+      py::dict entry;
+      entry["ply"] = t.ply;
+      entry["actor"] = t.actor;
+      entry["action"] = static_cast<int>(t.action);
+      py::list pre;
+      for (const auto& [kind, payload] : t.pre_events) {
+        py::dict e;
+        e["kind"] = kind;
+        py::dict p;
+        for (const auto& [pk, pv] : payload) p[py::cast(pk)] = any_to_py(pv);
+        e["payload"] = p;
+        pre.append(e);
+      }
+      entry["pre_events"] = pre;
+      py::list post;
+      for (const auto& [kind, payload] : t.post_events) {
+        py::dict e;
+        e["kind"] = kind;
+        py::dict p;
+        for (const auto& [pk, pv] : payload) p[py::cast(pk)] = any_to_py(pv);
+        e["payload"] = p;
+        post.append(e);
+      }
+      entry["post_events"] = post;
+      py::dict bs;
+      for (const auto& [k, v] : t.belief_snapshot_after) bs[py::cast(k)] = any_to_py(v);
+      entry["belief_snapshot_after"] = bs;
+      trace_list.append(entry);
+    }
+    out["observation_trace"] = trace_list;
+  }
+  return out;
 }
 
 py::dict run_selfplay_episode_py(
@@ -84,14 +204,53 @@ py::dict run_selfplay_episode_py(
     double dirichlet_alpha,
     double dirichlet_epsilon,
     int dirichlet_on_first_n_plies,
-    int max_game_plies) {
-  auto bundle = create_game(game_id, seed);
+    int max_game_plies,
+    bool tail_solve_enabled,
+    int tail_solve_start_ply,
+    int tail_solve_depth_limit,
+    std::int64_t tail_solve_node_budget,
+    float tail_solve_margin_weight,
+    double temperature_initial,
+    double temperature_final,
+    int temperature_decay_plies,
+    double heuristic_guidance_ratio,
+    double heuristic_temperature,
+    double training_filter_ratio,
+    bool nopeek_enabled,
+    int trace_perspective) {
+  py::gil_scoped_release release;
 
-  std::unique_ptr<search::IPolicyValueEvaluator> evaluator;
-  if (!model_path.empty()) {
-    evaluator = std::make_unique<infer::OnnxPolicyValueEvaluator>(
-        model_path, bundle.encoder.get());
+  auto bundle = GameRegistry::instance().create_game(game_id, seed);
+  // For tracing we need a SECOND bundle (and its belief_tracker) dedicated
+  // to the traced perspective. The primary bundle's tracker is re-init'd
+  // every ply by run_selfplay_episode (for MCTS NoPeek from current player).
+  std::unique_ptr<GameBundle> trace_bundle;
+  IBeliefTracker* trace_bt = nullptr;
+  runtime::PublicEventExtractor trace_extractor;
+  runtime::InitialObservationExtractor trace_obs_extractor;
+  if (trace_perspective >= 0) {
+    trace_bundle = std::make_unique<GameBundle>(
+        GameRegistry::instance().create_game(game_id, seed));
+    trace_bt = trace_bundle->belief_tracker.get();
+    trace_extractor = bundle.public_event_extractor;
+    trace_obs_extractor = bundle.initial_observation_extractor;
+    if (!trace_bt || !trace_extractor) {
+      py::gil_scoped_acquire acquire;
+      throw std::runtime_error(
+          "run_selfplay_episode: trace_perspective >= 0 but game '" + game_id +
+          "' did not register a belief_tracker + public_event_extractor");
+    }
   }
+
+  if (model_path.empty()) {
+    throw std::invalid_argument("run_selfplay_episode: model_path must not be empty");
+  }
+  auto evaluator = std::make_unique<infer::OnnxPolicyValueEvaluator>(
+      model_path, bundle.encoder.get());
+  if (!evaluator->is_ready()) {
+    throw std::runtime_error("run_selfplay_episode: failed to load model: " + evaluator->last_error());
+  }
+  const search::IPolicyValueEvaluator* eval_ptr = evaluator.get();
 
   runtime::SelfplayConfig cfg{};
   cfg.simulations = simulations;
@@ -101,106 +260,323 @@ py::dict run_selfplay_episode_py(
   cfg.dirichlet_epsilon = dirichlet_epsilon;
   cfg.dirichlet_on_first_n_plies = dirichlet_on_first_n_plies;
   cfg.max_game_plies = max_game_plies;
+  cfg.tail_solve_enabled = tail_solve_enabled;
+  cfg.tail_solve_start_ply = tail_solve_start_ply;
+  cfg.tail_solve_config.depth_limit = tail_solve_depth_limit;
+  cfg.tail_solve_config.node_budget = tail_solve_node_budget;
+  cfg.tail_solve_config.margin_weight = tail_solve_margin_weight;
+  cfg.heuristic_guidance_ratio = heuristic_guidance_ratio;
+  cfg.heuristic_temperature = heuristic_temperature;
+  cfg.training_filter_ratio = training_filter_ratio;
 
-  search::IPolicyValueEvaluator* eval_ptr = evaluator.get();
-
-  struct UniformEvaluator final : search::IPolicyValueEvaluator {
-    bool evaluate(
-        const IGameState&, int,
-        const std::vector<ActionId>& legal,
-        std::vector<float>* priors, float* value) const override {
-      priors->assign(legal.size(), 1.0f / static_cast<float>(legal.size()));
-      *value = 0.0f;
-      return true;
+  if (temperature_initial >= 0.0 || temperature_final >= 0.0) {
+    cfg.temperature_schedule.enabled = true;
+    if (temperature_initial >= 0.0) {
+      cfg.temperature_schedule.has_initial = true;
+      cfg.temperature_schedule.initial = temperature_initial;
     }
-  };
-  UniformEvaluator uniform_eval;
-  if (!eval_ptr) eval_ptr = &uniform_eval;
-
-  auto result = runtime::run_selfplay_episode(
-      *bundle.state, *bundle.rules, *bundle.value_model, *eval_ptr, cfg, seed);
-
-  py::list samples;
-  for (const auto& s : result.samples) {
-    py::dict sample;
-    sample["ply"] = s.ply;
-    sample["player"] = s.player;
-    sample["action_id"] = s.action_id;
-    sample["z"] = s.z;
-    sample["policy_action_ids"] = s.policy_action_ids;
-    sample["policy_action_visits"] = s.policy_action_visits;
-    samples.append(sample);
+    if (temperature_final >= 0.0) {
+      cfg.temperature_schedule.has_final = true;
+      cfg.temperature_schedule.final_ = temperature_final;
+    }
+    cfg.temperature_schedule.decay_plies = temperature_decay_plies;
   }
 
-  py::dict out;
-  out["winner"] = result.winner;
-  out["draw"] = result.draw;
-  out["total_plies"] = result.total_plies;
-  out["samples"] = samples;
-  return out;
+  runtime::TraversalLimiterFactory limiter_factory;
+  IBeliefTracker* bt = bundle.belief_tracker.get();
+  if (nopeek_enabled && bt && bundle.stochastic_detector) {
+    const std::uint64_t limiter_seed = seed ^ 0x9E3779B97F4A7C15ULL;
+    limiter_factory = [&bundle, bt, limiter_seed]() -> std::unique_ptr<search::INetMctsTraversalLimiter> {
+      runtime::NoPeekConfig np;
+      np.enable_chance_sampling = bundle.enable_chance_sampling;
+      return std::make_unique<runtime::NoPeekTraversalLimiter>(
+          np, bundle.stochastic_detector, *bt, *bundle.rules, limiter_seed);
+    };
+  }
+
+  auto result = runtime::run_selfplay_episode(
+      *bundle.state, *bundle.rules, *bundle.value_model, *eval_ptr, cfg, seed,
+      limiter_factory,
+      bt,
+      bundle.encoder.get(),
+      bundle.tail_solver.get(),
+      bundle.adjudicator,
+      bundle.auxiliary_scorer,
+      bundle.heuristic_picker,
+      bundle.training_action_filter,
+      bundle.tail_solve_trigger,
+      bundle.episode_stats_extractor,
+      trace_perspective,
+      trace_bt,
+      trace_extractor,
+      trace_obs_extractor);
+
+  py::gil_scoped_acquire acquire;
+  return result_to_py(result);
 }
 
 py::dict run_arena_match_py(
     const std::string& game_id,
     std::uint64_t seed,
-    const std::string& model_path_0,
-    const std::string& model_path_1,
-    int simulations_0,
-    int simulations_1,
-    double temperature) {
-  auto bundle = create_game(game_id, seed);
+    const std::vector<std::string>& model_paths,
+    const std::vector<int>& simulations_list,
+    double temperature,
+    int max_game_plies,
+    bool tail_solve) {
+  py::gil_scoped_release release;
 
-  std::unique_ptr<search::IPolicyValueEvaluator> eval0;
-  std::unique_ptr<search::IPolicyValueEvaluator> eval1;
-  if (!model_path_0.empty()) {
-    eval0 = std::make_unique<infer::OnnxPolicyValueEvaluator>(
-        model_path_0, bundle.encoder.get());
-  }
-  if (!model_path_1.empty()) {
-    eval1 = std::make_unique<infer::OnnxPolicyValueEvaluator>(
-        model_path_1, bundle.encoder.get());
-  }
+  auto bundle = GameRegistry::instance().create_game(game_id, seed);
 
-  struct UniformEvaluator final : search::IPolicyValueEvaluator {
-    bool evaluate(
-        const IGameState&, int,
-        const std::vector<ActionId>& legal,
-        std::vector<float>* priors, float* value) const override {
-      priors->assign(legal.size(), 1.0f / static_cast<float>(legal.size()));
-      *value = 0.0f;
-      return true;
+  if (model_paths.empty()) {
+    throw std::invalid_argument("run_arena_match: model_paths must not be empty");
+  }
+  for (size_t i = 0; i < model_paths.size(); ++i) {
+    if (model_paths[i].empty()) {
+      throw std::invalid_argument(
+          "run_arena_match: model_paths[" + std::to_string(i) + "] must not be empty");
     }
-  };
-  UniformEvaluator uniform_eval;
+  }
 
-  search::IPolicyValueEvaluator* ptr0 = eval0 ? eval0.get() : &uniform_eval;
-  search::IPolicyValueEvaluator* ptr1 = eval1 ? eval1.get() : &uniform_eval;
+  std::vector<std::unique_ptr<infer::OnnxPolicyValueEvaluator>> evaluators;
+  std::vector<const search::IPolicyValueEvaluator*> eval_ptrs;
+  for (size_t i = 0; i < model_paths.size(); ++i) {
+    auto ev = std::make_unique<infer::OnnxPolicyValueEvaluator>(
+        model_paths[i], bundle.encoder.get());
+    if (!ev->is_ready()) {
+      throw std::runtime_error(
+          "run_arena_match: failed to load model_" + std::to_string(i) + ": " + ev->last_error());
+    }
+    eval_ptrs.push_back(ev.get());
+    evaluators.push_back(std::move(ev));
+  }
 
-  runtime::ArenaPlayerConfig cfg0{};
-  cfg0.simulations = simulations_0;
-  cfg0.temperature = temperature;
-  runtime::ArenaPlayerConfig cfg1{};
-  cfg1.simulations = simulations_1;
-  cfg1.temperature = temperature;
+  std::vector<runtime::ArenaPlayerConfig> player_configs;
+  for (size_t i = 0; i < model_paths.size(); ++i) {
+    runtime::ArenaPlayerConfig cfg{};
+    cfg.simulations = (i < simulations_list.size())
+        ? simulations_list[i] : 200;
+    cfg.temperature = temperature;
+    if (tail_solve && bundle.tail_solver) {
+      cfg.tail_solve_enabled = true;
+      cfg.tail_solve_config.depth_limit = 10;
+      cfg.tail_solve_config.node_budget = 200000;
+      cfg.tail_solver = bundle.tail_solver.get();
+      cfg.tail_solve_trigger = bundle.tail_solve_trigger;
+    }
+    player_configs.push_back(cfg);
+  }
 
+  runtime::TraversalLimiterFactory arena_limiter_factory;
+  IBeliefTracker* arena_bt = bundle.belief_tracker.get();
+  if (arena_bt && bundle.stochastic_detector) {
+    const std::uint64_t arena_limiter_seed = seed ^ 0x9E3779B97F4A7C15ULL;
+    arena_limiter_factory = [&bundle, arena_bt, arena_limiter_seed]() -> std::unique_ptr<search::INetMctsTraversalLimiter> {
+      runtime::NoPeekConfig np;
+      np.enable_chance_sampling = bundle.enable_chance_sampling;
+      return std::make_unique<runtime::NoPeekTraversalLimiter>(
+          np, bundle.stochastic_detector, *arena_bt, *bundle.rules, arena_limiter_seed);
+    };
+  }
+
+  const size_t n_eval = eval_ptrs.size();
   auto result = runtime::run_arena_match(
       *bundle.state, *bundle.rules, *bundle.value_model,
-      [&](int player) -> const search::IPolicyValueEvaluator& {
-        return player == 0 ? *ptr0 : *ptr1;
+      [&eval_ptrs, n_eval](int player) -> const search::IPolicyValueEvaluator& {
+        return *eval_ptrs[static_cast<size_t>(player) % n_eval];
       },
-      cfg0, cfg1, 500, seed);
+      player_configs, max_game_plies, seed,
+      arena_limiter_factory, arena_bt, bundle.adjudicator);
 
+  py::gil_scoped_acquire acquire;
   py::dict out;
   out["winner"] = result.winner;
   out["draw"] = result.draw;
   out["total_plies"] = result.total_plies;
+  py::list actions;
+  for (auto a : result.action_history) actions.append(static_cast<int>(a));
+  out["action_history"] = actions;
+  py::list ply_stats;
+  for (const auto& ps : result.ply_stats) {
+    py::dict d;
+    d["tail_solved"] = ps.tail_solved;
+    d["tail_solve_value"] = ps.tail_solve_value;
+    ply_stats.append(d);
+  }
+  out["ply_stats"] = ply_stats;
+  out["traversal_stops"] = result.total_traversal_stops;
   return out;
+}
+
+py::dict run_constrained_eval_vs_heuristic_py(
+    const std::string& game_id,
+    std::uint64_t seed,
+    const std::string& model_path,
+    int simulations,
+    int model_is_player,
+    bool constrained,
+    double heuristic_temperature) {
+  py::gil_scoped_release release;
+
+  auto bundle = GameRegistry::instance().create_game(game_id, seed);
+
+  if (model_path.empty()) {
+    throw std::invalid_argument("run_constrained_eval_vs_heuristic: model_path must not be empty");
+  }
+  auto model_eval = std::make_unique<infer::OnnxPolicyValueEvaluator>(
+      model_path, bundle.encoder.get());
+  if (!model_eval->is_ready()) {
+    throw std::runtime_error("run_constrained_eval_vs_heuristic: failed to load model: " + model_eval->last_error());
+  }
+  const search::IPolicyValueEvaluator* eval_ptr = model_eval.get();
+
+  std::unique_ptr<runtime::FilteredRulesWrapper> filtered_rules;
+  if (constrained && bundle.training_action_filter) {
+    filtered_rules = std::make_unique<runtime::FilteredRulesWrapper>(
+        *bundle.rules, bundle.training_action_filter);
+  }
+
+  auto state = bundle.state->clone_state();
+  int ply = 0;
+  int total_ts = 0;
+  std::vector<ActionId> action_history;
+  std::vector<runtime::ArenaPlyStats> ply_stats_vec;
+
+  std::mt19937_64 rng(seed ^ 0xBEEF);
+
+  std::unique_ptr<runtime::NoPeekTraversalLimiter> limiter;
+  IBeliefTracker* bt = bundle.belief_tracker.get();
+  if (bt && bundle.stochastic_detector) {
+    runtime::NoPeekConfig np;
+    np.enable_chance_sampling = bundle.enable_chance_sampling;
+    limiter = std::make_unique<runtime::NoPeekTraversalLimiter>(
+        np, bundle.stochastic_detector, *bt, *bundle.rules, seed);
+  }
+
+  while (!state->is_terminal() && ply < 500) {
+    const int cp = state->current_player();
+
+    if (cp == model_is_player) {
+      const IGameRules& rules_for_model =
+          filtered_rules ? *filtered_rules : *bundle.rules;
+      const auto legal = rules_for_model.legal_actions(*state);
+      if (legal.empty()) break;
+
+      if (bt) bt->init(*state, cp);
+
+      search::NetMctsConfig mcts_cfg{};
+      mcts_cfg.simulations = simulations;
+      mcts_cfg.c_puct = 1.4f;
+      mcts_cfg.traversal_limiter = limiter.get();
+
+      if (bundle.tail_solver) {
+        bool try_ts = false;
+        if (bundle.tail_solve_trigger) {
+          try_ts = bundle.tail_solve_trigger(*state, ply);
+        } else if (ply >= 20) {
+          try_ts = true;
+        }
+        if (try_ts) {
+          mcts_cfg.tail_solve_enabled = true;
+          mcts_cfg.tail_solve_config.depth_limit = 10;
+          mcts_cfg.tail_solve_config.node_budget = 200000;
+          mcts_cfg.tail_solver = bundle.tail_solver.get();
+        }
+      }
+
+      search::NetMcts mcts(mcts_cfg);
+      search::NetMctsStats stats{};
+      const std::uint64_t mcts_seed = seed ^
+          (static_cast<std::uint64_t>(ply) * kGoldenRatio64) ^ 0x243F6A8885A308D3ULL;
+      mcts.search_root(*state, rules_for_model, *bundle.value_model,
+                        *eval_ptr, &stats, mcts_seed);
+
+      ActionId chosen = search::select_action_from_visits(
+          stats.root_actions, stats.root_action_visits, 0.0,
+          seed ^ static_cast<std::uint64_t>(ply), legal[0]);
+
+      total_ts += stats.traversal_stops;
+      action_history.push_back(chosen);
+      ply_stats_vec.push_back({stats.tail_solved, stats.tail_solve_value});
+      std::unique_ptr<IGameState> state_before;
+      if (bt) state_before = state->clone_state();
+      bundle.rules->do_action_fast(*state, chosen);
+      if (bt) bt->observe_action(*state_before, chosen, *state);
+    } else {
+      if (!bundle.heuristic_picker) break;
+      auto hr = bundle.heuristic_picker(*state, *bundle.rules, rng());
+      if (hr.actions.empty()) break;
+
+      double u01 = static_cast<double>(rng() & 0xFFFFFFFF) / 4294967296.0;
+      std::size_t idx = runtime::sample_heuristic_index(
+          hr.scores, heuristic_temperature, u01);
+      ActionId chosen = hr.actions[idx];
+      action_history.push_back(chosen);
+      ply_stats_vec.push_back({false, 0.0f});
+      std::unique_ptr<IGameState> state_before;
+      if (bt) state_before = state->clone_state();
+      bundle.rules->do_action_fast(*state, chosen);
+      if (bt) bt->observe_action(*state_before, chosen, *state);
+    }
+    if (limiter) limiter->on_ply_complete();
+    ++ply;
+  }
+
+  int winner = -1;
+  bool draw = true;
+  if (state->is_terminal()) {
+    winner = state->winner();
+    draw = (winner < 0);
+  } else if (bundle.adjudicator) {
+    winner = bundle.adjudicator(*state);
+    draw = (winner < 0);
+  }
+
+  py::gil_scoped_acquire acquire;
+  py::dict out;
+  out["winner"] = winner;
+  out["draw"] = draw;
+  out["total_plies"] = ply;
+  out["traversal_stops"] = total_ts;
+  py::list actions;
+  for (auto a : action_history) actions.append(static_cast<int>(a));
+  out["action_history"] = actions;
+  py::list pstats;
+  for (const auto& ps : ply_stats_vec) {
+    py::dict d;
+    d["tail_solved"] = ps.tail_solved;
+    d["tail_solve_value"] = ps.tail_solve_value;
+    pstats.append(d);
+  }
+  out["ply_stats"] = pstats;
+  return out;
+}
+
+py::dict run_heuristic_episode_py(
+    const std::string& game_id,
+    std::uint64_t seed,
+    double temperature,
+    int max_game_plies) {
+  py::gil_scoped_release release;
+
+  auto bundle = GameRegistry::instance().create_game(game_id, seed);
+
+  auto result = runtime::run_heuristic_episode(
+      *bundle.state, *bundle.rules, *bundle.value_model,
+      bundle.encoder.get(),
+      bundle.heuristic_picker,
+      temperature, max_game_plies, seed,
+      bundle.auxiliary_scorer, bundle.adjudicator);
+
+  py::gil_scoped_acquire acquire;
+  return result_to_py(result);
 }
 
 py::dict encode_state_py(
     const std::string& game_id,
     std::uint64_t seed) {
-  auto bundle = create_game(game_id, seed);
+  py::gil_scoped_release release;
+
+  auto bundle = GameRegistry::instance().create_game(game_id, seed);
   const int player = bundle.state->current_player();
   const auto legal = bundle.rules->legal_actions(*bundle.state);
 
@@ -208,14 +584,446 @@ py::dict encode_state_py(
   std::vector<float> legal_mask;
   bundle.encoder->encode(*bundle.state, player, legal, &features, &legal_mask);
 
+  const bool is_terminal = bundle.state->is_terminal();
+  const int action_space = bundle.encoder->action_space();
+  const int feature_dim = bundle.encoder->feature_dim();
+
+  py::gil_scoped_acquire acquire;
   py::dict out;
   out["features"] = features;
   out["legal_mask"] = legal_mask;
   out["legal_actions"] = legal;
   out["current_player"] = player;
-  out["is_terminal"] = bundle.state->is_terminal();
-  out["action_space"] = bundle.encoder->action_space();
-  out["feature_dim"] = bundle.encoder->feature_dim();
+  out["is_terminal"] = is_terminal;
+  out["action_space"] = action_space;
+  out["feature_dim"] = feature_dim;
+  return out;
+}
+
+py::dict tail_solve_py(
+    const std::string& game_id,
+    std::uint64_t seed,
+    int perspective_player,
+    int depth_limit,
+    std::int64_t node_budget) {
+  py::gil_scoped_release release;
+
+  auto bundle = GameRegistry::instance().create_game(game_id, seed);
+  if (!bundle.tail_solver) {
+    py::gil_scoped_acquire acquire;
+    throw std::runtime_error("tail_solve: game '" + game_id + "' has no tail_solver registered");
+  }
+
+  search::TailSolveConfig cfg{};
+  cfg.depth_limit = depth_limit;
+  cfg.node_budget = node_budget;
+  if (bundle.auxiliary_scorer) {
+    cfg.margin_weight = 0.01f;
+    cfg.margin_scorer = bundle.auxiliary_scorer;
+  }
+
+  auto ts = bundle.tail_solver->solve(
+      *bundle.state, *bundle.rules, *bundle.value_model,
+      perspective_player, cfg);
+
+  py::gil_scoped_acquire acquire;
+  py::dict out;
+  out["value"] = ts.value;
+  out["best_action"] = ts.best_action;
+  out["nodes_searched"] = ts.nodes_searched;
+  out["elapsed_ms"] = ts.elapsed_ms;
+  out["budget_exceeded"] = ts.budget_exceeded;
+  return out;
+}
+
+class GameSessionWrapper {
+ public:
+  GameSessionWrapper(const std::string& game_id, std::uint64_t seed,
+                     const std::string& model_path, bool use_filter)
+      : game_id_(game_id), seed_(seed), model_path_(model_path) {
+    py::gil_scoped_release release;
+    bundle_ = std::make_unique<GameBundle>(
+        GameRegistry::instance().create_game(game_id, seed));
+    if (!model_path.empty()) {
+      evaluator_ = std::make_unique<infer::OnnxPolicyValueEvaluator>(
+          model_path, bundle_->encoder.get());
+      if (!evaluator_->is_ready()) {
+        throw std::runtime_error("GameSession: failed to load model: " + evaluator_->last_error());
+      }
+    }
+    if (use_filter && bundle_->training_action_filter) {
+      filtered_rules_ = std::make_unique<runtime::FilteredRulesWrapper>(
+          *bundle_->rules, bundle_->training_action_filter);
+    }
+    bt_ = bundle_->belief_tracker.get();
+    if (bt_ && bundle_->stochastic_detector) {
+      runtime::NoPeekConfig np;
+      np.enable_chance_sampling = bundle_->enable_chance_sampling;
+      limiter_ = std::make_unique<runtime::NoPeekTraversalLimiter>(
+          np, bundle_->stochastic_detector, *bt_, *bundle_->rules, seed);
+    }
+  }
+
+  bool is_terminal() const { return bundle_->state->is_terminal(); }
+  bool is_turn_start() const { return bundle_->state->is_turn_start(); }
+  int current_player() const { return bundle_->state->current_player(); }
+  int winner() const { return bundle_->state->winner(); }
+  int num_players() const { return bundle_->state->num_players(); }
+  std::string game_id() const { return game_id_; }
+
+  py::dict get_state_dict() {
+    if (!bundle_->state_serializer) {
+      throw std::runtime_error("get_state_dict: game '" + game_id_ + "' has no state_serializer registered");
+    }
+    py::gil_scoped_release release;
+    auto m = bundle_->state_serializer(*bundle_->state);
+    py::gil_scoped_acquire acquire;
+    py::dict out;
+    for (const auto& [k, v] : m) out[py::cast(k)] = any_to_py(v);
+    return out;
+  }
+
+  py::dict get_action_info(ActionId action) {
+    if (!bundle_->action_descriptor) {
+      throw std::runtime_error("get_action_info: game '" + game_id_ + "' has no action_descriptor registered");
+    }
+    auto m = bundle_->action_descriptor(action);
+    py::dict out;
+    for (const auto& [k, v] : m) out[py::cast(k)] = any_to_py(v);
+    return out;
+  }
+
+  std::vector<ActionId> get_legal_actions() {
+    py::gil_scoped_release release;
+    const IGameRules& rules = filtered_rules_ ? *filtered_rules_ : *bundle_->rules;
+    return rules.legal_actions(*bundle_->state);
+  }
+
+  std::vector<ActionId> get_all_legal_actions() {
+    py::gil_scoped_release release;
+    return bundle_->rules->legal_actions(*bundle_->state);
+  }
+
+  void apply_action(ActionId action) {
+    py::gil_scoped_release release;
+    std::unique_ptr<IGameState> state_before;
+    if (bt_) state_before = bundle_->state->clone_state();
+    bundle_->rules->do_action_fast(*bundle_->state, action);
+    if (bt_) bt_->observe_action(*state_before, action, *bundle_->state);
+    if (limiter_) limiter_->on_ply_complete();
+    ++ply_count_;
+  }
+
+  // Combined action + events step for the AI API. Sequence:
+  //   1. Snapshot state_before
+  //   2. Apply all pre-action events (hidden info the action depends on)
+  //   3. Apply the action itself
+  //   4. Apply all post-action events (override random outcomes)
+  //   5. belief_tracker.observe_action(state_before, action, FINAL state)
+  //
+  // This is critical: the belief tracker must see the POST-EVENT state as
+  // its state_after, otherwise it records the AI's own random outcomes
+  // (which differ from ground truth) instead of what actually happened.
+  //
+  // `pre_events` / `post_events` are lists of {"kind": str, "payload": dict}.
+  void apply_observation(ActionId action,
+                         py::list pre_events,
+                         py::list post_events) {
+    if (!bundle_->public_event_applier) {
+      throw std::runtime_error(
+          "apply_observation: game '" + game_id_ +
+          "' has no public_event_applier registered");
+    }
+    // Convert Python events to (kind, AnyMap) pairs BEFORE releasing GIL.
+    std::vector<std::pair<std::string, AnyMap>> pre_list, post_list;
+    auto convert = [](py::list src, std::vector<std::pair<std::string, AnyMap>>& dst) {
+      for (py::handle item : src) {
+        py::dict d = py::cast<py::dict>(item);
+        std::string kind = py::cast<std::string>(d["kind"]);
+        AnyMap payload = py_dict_to_any_map(py::cast<py::dict>(d["payload"]));
+        dst.emplace_back(std::move(kind), std::move(payload));
+      }
+    };
+    convert(pre_events, pre_list);
+    convert(post_events, post_list);
+
+    py::gil_scoped_release release;
+    std::unique_ptr<IGameState> state_before = bundle_->state->clone_state();
+    for (const auto& [kind, payload] : pre_list) {
+      bundle_->public_event_applier(*bundle_->state, EventPhase::kPreAction, kind, payload);
+    }
+    bundle_->rules->do_action_fast(*bundle_->state, action);
+    for (const auto& [kind, payload] : post_list) {
+      bundle_->public_event_applier(*bundle_->state, EventPhase::kPostAction, kind, payload);
+    }
+    if (bt_) bt_->observe_action(*state_before, action, *bundle_->state);
+    if (limiter_) limiter_->on_ply_complete();
+    ++ply_count_;
+  }
+
+  // Public-event protocol (used by the AI API). Applies an event to the
+  // internal game state. `phase` is "pre" or "post" relative to an action;
+  // the caller is responsible for ordering pre events BEFORE apply_action
+  // and post events AFTER. The game's registered applier decides what
+  // fields to mutate. Throws if the game did not register an applier.
+  //
+  // Prefer apply_observation() for the API driving use case — it handles
+  // the action + events + observe sequencing atomically. apply_event is
+  // kept for tests and debugging that want to drive the pieces separately.
+  void apply_event(const std::string& phase, const std::string& kind, py::dict payload) {
+    if (!bundle_->public_event_applier) {
+      throw std::runtime_error(
+          "apply_event: game '" + game_id_ + "' has no public_event_applier registered");
+    }
+    EventPhase ph;
+    if (phase == "pre") ph = EventPhase::kPreAction;
+    else if (phase == "post") ph = EventPhase::kPostAction;
+    else throw std::invalid_argument("apply_event: phase must be 'pre' or 'post', got '" + phase + "'");
+    AnyMap payload_map = py_dict_to_any_map(payload);
+    py::gil_scoped_release release;
+    bundle_->public_event_applier(*bundle_->state, ph, kind, payload_map);
+  }
+
+  // Partner-provided initial observation: perspective-specific info the AI
+  // would know at game start (e.g. own starting hand). Overrides the
+  // session's seed-generated hidden initial state for the perspective
+  // player. Throws if the game registered no applier.
+  void apply_initial_observation(int perspective_player, py::dict initial_obs) {
+    if (!bundle_->initial_observation_applier) {
+      throw std::runtime_error(
+          "apply_initial_observation: game '" + game_id_ +
+          "' has no initial_observation_applier registered");
+    }
+    AnyMap obs_map = py_dict_to_any_map(initial_obs);
+    py::gil_scoped_release release;
+    bundle_->initial_observation_applier(*bundle_->state, perspective_player, obs_map);
+    if (bt_) bt_->init(*bundle_->state, perspective_player);
+  }
+
+  // Return the belief tracker's serialized state as a dict. Canonical form:
+  // two trackers with semantically identical beliefs return equal dicts.
+  // Empty dict if no tracker or tracker holds no explicit state.
+  py::dict get_belief_snapshot() {
+    py::dict out;
+    if (!bt_) return out;
+    AnyMap m = bt_->serialize();
+    for (const auto& [k, v] : m) out[py::cast(k)] = any_to_py(v);
+    return out;
+  }
+
+  void configure_tail_solve(bool enabled, int depth_limit, std::int64_t node_budget) {
+    ts_enabled_ = enabled;
+    ts_depth_limit_ = depth_limit;
+    ts_node_budget_ = node_budget;
+  }
+
+  py::dict get_ai_action(int simulations, double temperature) {
+    py::gil_scoped_release release;
+
+    const IGameRules& rules = filtered_rules_ ? *filtered_rules_ : *bundle_->rules;
+    const auto legal = rules.legal_actions(*bundle_->state);
+    if (legal.empty()) {
+      py::gil_scoped_acquire acquire;
+      return py::dict();
+    }
+
+    if (!evaluator_) {
+      throw std::runtime_error("GameSession.get_ai_action: no model loaded — create session with model_path");
+    }
+    const search::IPolicyValueEvaluator* eval_ptr = evaluator_.get();
+
+    if (bt_) bt_->init(*bundle_->state, bundle_->state->current_player());
+
+    search::NetMctsConfig mcts_cfg{};
+    mcts_cfg.simulations = simulations;
+    mcts_cfg.c_puct = 1.4f;
+    mcts_cfg.traversal_limiter = limiter_.get();
+
+    if (ts_enabled_ && bundle_->tail_solver) {
+      int ply = static_cast<int>(ply_count_);
+      bool try_ts = false;
+      if (bundle_->tail_solve_trigger) {
+        try_ts = bundle_->tail_solve_trigger(*bundle_->state, ply);
+      } else {
+        try_ts = true;
+      }
+      if (try_ts) {
+        mcts_cfg.tail_solve_enabled = true;
+        mcts_cfg.tail_solve_config.depth_limit = ts_depth_limit_;
+        mcts_cfg.tail_solve_config.node_budget = ts_node_budget_;
+        mcts_cfg.tail_solver = bundle_->tail_solver.get();
+      }
+    }
+
+    search::NetMcts mcts(mcts_cfg);
+    search::NetMctsStats stats{};
+    const std::uint64_t mcts_seed = seed_ ^
+        (static_cast<std::uint64_t>(ply_count_) * kGoldenRatio64) ^ 0x243F6A8885A308D3ULL;
+    mcts.search_root(*bundle_->state, rules, *bundle_->value_model,
+                      *eval_ptr, &stats, mcts_seed);
+
+    std::uint64_t action_seed = seed_ ^
+        static_cast<std::uint64_t>(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+    ActionId chosen = search::select_action_from_visits(
+        stats.root_actions, stats.root_action_visits,
+        temperature, action_seed, legal[0]);
+
+    py::gil_scoped_acquire acquire;
+    py::dict out;
+    out["action"] = chosen;
+    out["action_info"] = get_action_info(chosen);
+    py::dict st;
+    st["simulations"] = stats.simulations_done;
+    st["best_value"] = stats.best_action_value;
+    py::list rv;
+    for (double v : stats.root_values) rv.append(v);
+    st["root_values"] = rv;
+    py::dict wm;
+    for (size_t ei = 0; ei < stats.root_actions.size(); ++ei) {
+      if (ei < stats.root_edge_values.size()) {
+        py::list vals;
+        for (double v : stats.root_edge_values[ei]) vals.append(v);
+        wm[py::cast(static_cast<int>(stats.root_actions[ei]))] = vals;
+      }
+    }
+    st["action_values"] = wm;
+    st["tail_solved"] = stats.tail_solved;
+    st["tail_solve_value"] = stats.tail_solve_value;
+    st["traversal_stops"] = stats.traversal_stops;
+    out["stats"] = st;
+    return out;
+  }
+
+  py::dict get_heuristic_action() {
+    if (!bundle_->heuristic_picker) {
+      throw std::runtime_error("get_heuristic_action: game '" + game_id_ + "' has no heuristic_picker registered");
+    }
+
+    ActionId chosen;
+    {
+      py::gil_scoped_release release;
+      auto hr = bundle_->heuristic_picker(
+          *bundle_->state, *bundle_->rules, seed_ ^ 0xDEAD);
+      if (hr.actions.empty()) {
+        py::gil_scoped_acquire acquire;
+        return py::dict();
+      }
+
+      double max_score = *std::max_element(hr.scores.begin(), hr.scores.end());
+      chosen = hr.actions[0];
+      for (size_t i = 0; i < hr.scores.size(); ++i) {
+        if (hr.scores[i] >= max_score - 1e-9) {
+          chosen = hr.actions[i];
+          break;
+        }
+      }
+    }
+
+    py::dict out;
+    out["action"] = chosen;
+    out["action_info"] = get_action_info(chosen);
+    return out;
+  }
+
+  py::dict apply_ai_action(int simulations, double temperature) {
+    auto result = get_ai_action(simulations, temperature);
+    if (result.contains("action")) {
+      apply_action(py::cast<ActionId>(result["action"]));
+    }
+    return result;
+  }
+
+ private:
+  std::string game_id_;
+  std::uint64_t seed_;
+  std::string model_path_;
+  std::unique_ptr<GameBundle> bundle_;
+  std::unique_ptr<infer::OnnxPolicyValueEvaluator> evaluator_;
+  std::unique_ptr<runtime::FilteredRulesWrapper> filtered_rules_;
+  std::unique_ptr<runtime::NoPeekTraversalLimiter> limiter_;
+  IBeliefTracker* bt_ = nullptr;
+  std::size_t ply_count_ = 0;
+  bool ts_enabled_ = false;
+  int ts_depth_limit_ = 10;
+  std::int64_t ts_node_budget_ = 200000;
+};
+
+py::dict test_belief_tracker_py(
+    const std::string& game_id,
+    std::uint64_t seed,
+    int plies,
+    int randomize_trials) {
+  py::gil_scoped_release release;
+
+  auto bundle = GameRegistry::instance().create_game(game_id, seed);
+  if (!bundle.belief_tracker) {
+    py::gil_scoped_acquire acquire;
+    throw std::runtime_error("test_belief_tracker: game must have belief_tracker");
+  }
+
+  auto state = bundle.state->clone_state();
+  IBeliefTracker* bt = bundle.belief_tracker.get();
+  bt->init(*state, 0);
+
+  std::mt19937_64 rng(seed);
+  int actual_plies = 0;
+  for (int i = 0; i < plies && !state->is_terminal(); ++i) {
+    auto legal = bundle.rules->legal_actions(*state);
+    if (legal.empty()) break;
+    const size_t idx = rng() % legal.size();
+    ActionId chosen = legal[idx];
+    auto state_before = state->clone_state();
+    bundle.rules->do_action_fast(*state, chosen);
+    bt->observe_action(*state_before, chosen, *state);
+    bt->init(*state, 0);
+    actual_plies += 1;
+  }
+
+  auto extract_deck_ids = [&](const IGameState& gs) -> std::vector<int> {
+    if (!bundle.state_serializer) return {};
+    auto m = bundle.state_serializer(gs);
+    std::vector<int> result;
+    auto it = m.find("_test_all_deck_ids");
+    if (it != m.end()) {
+      result = std::any_cast<std::vector<int>>(it->second);
+    }
+    return result;
+  };
+
+  auto extract_tableau_ids = [&](const IGameState& gs) -> std::vector<int> {
+    if (!bundle.state_serializer) return {};
+    auto m = bundle.state_serializer(gs);
+    std::vector<int> result;
+    auto it = m.find("_test_tableau_ids");
+    if (it != m.end()) {
+      result = std::any_cast<std::vector<int>>(it->second);
+    }
+    return result;
+  };
+
+  std::vector<int> original_deck = extract_deck_ids(*state);
+  std::vector<int> tableau_ids = extract_tableau_ids(*state);
+
+  std::vector<std::vector<int>> trial_decks;
+  trial_decks.reserve(static_cast<size_t>(randomize_trials));
+  for (int t = 0; t < randomize_trials; ++t) {
+    auto clone = state->clone_state();
+    std::mt19937 trial_rng(static_cast<unsigned>(seed ^ static_cast<std::uint64_t>(t + 1)));
+    bt->randomize_unseen(*clone, trial_rng);
+    trial_decks.push_back(extract_deck_ids(*clone));
+  }
+
+  py::gil_scoped_acquire acquire;
+  py::dict out;
+  out["plies"] = actual_plies;
+  out["original_deck"] = original_deck;
+  out["tableau_cards"] = tableau_ids;
+  py::list trials;
+  for (const auto& d : trial_decks) {
+    trials.append(py::cast(d));
+  }
+  out["trial_decks"] = trials;
   return out;
 }
 
@@ -234,29 +1042,116 @@ PYBIND11_MODULE(dinoboard_engine, m) {
       py::arg("dirichlet_alpha") = 0.3,
       py::arg("dirichlet_epsilon") = 0.25,
       py::arg("dirichlet_on_first_n_plies") = 30,
-      py::arg("max_game_plies") = 500);
+      py::arg("max_game_plies") = 500,
+      py::arg("tail_solve_enabled") = false,
+      py::arg("tail_solve_start_ply") = 40,
+      py::arg("tail_solve_depth_limit") = 5,
+      py::arg("tail_solve_node_budget") = 10000000LL,
+      py::arg("tail_solve_margin_weight") = 0.0f,
+      py::arg("temperature_initial") = -1.0,
+      py::arg("temperature_final") = -1.0,
+      py::arg("temperature_decay_plies") = 0,
+      py::arg("heuristic_guidance_ratio") = 0.0,
+      py::arg("heuristic_temperature") = 0.0,
+      py::arg("training_filter_ratio") = 1.0,
+      py::arg("nopeek_enabled") = true,
+      py::arg("trace_perspective") = -1);
 
   m.def("run_arena_match", &run_arena_match_py,
       py::arg("game_id"),
       py::arg("seed"),
-      py::arg("model_path_0") = "",
-      py::arg("model_path_1") = "",
-      py::arg("simulations_0") = 200,
-      py::arg("simulations_1") = 200,
-      py::arg("temperature") = 0.0);
+      py::arg("model_paths"),
+      py::arg("simulations_list"),
+      py::arg("temperature") = 0.0,
+      py::arg("max_game_plies") = 500,
+      py::arg("tail_solve") = false);
+
+  m.def("run_constrained_eval_vs_heuristic", &run_constrained_eval_vs_heuristic_py,
+      py::arg("game_id"),
+      py::arg("seed"),
+      py::arg("model_path"),
+      py::arg("simulations") = 200,
+      py::arg("model_is_player") = 0,
+      py::arg("constrained") = true,
+      py::arg("heuristic_temperature") = 0.0);
+
+  m.def("run_heuristic_episode", &run_heuristic_episode_py,
+      py::arg("game_id"),
+      py::arg("seed"),
+      py::arg("temperature") = 0.0,
+      py::arg("max_game_plies") = 200);
 
   m.def("encode_state", &encode_state_py,
       py::arg("game_id"),
       py::arg("seed") = 0xC0FFEE);
 
+  m.def("tail_solve", &tail_solve_py,
+      py::arg("game_id"),
+      py::arg("seed"),
+      py::arg("perspective_player") = 0,
+      py::arg("depth_limit") = 10,
+      py::arg("node_budget") = 200000LL);
+
+  m.def("test_belief_tracker", &test_belief_tracker_py,
+      py::arg("game_id"),
+      py::arg("seed"),
+      py::arg("plies") = 20,
+      py::arg("randomize_trials") = 10);
+
+  m.def("game_metadata", [](const std::string& game_id) -> py::dict {
+    py::gil_scoped_release release;
+    auto bundle = GameRegistry::instance().create_game(game_id, 0);
+    const int num_players = bundle.state->num_players();
+    const int action_space = bundle.encoder->action_space();
+    const int feature_dim = bundle.encoder->feature_dim();
+    py::gil_scoped_acquire acquire;
+    py::dict out;
+    out["num_players"] = num_players;
+    out["action_space"] = action_space;
+    out["feature_dim"] = feature_dim;
+    return out;
+  }, py::arg("game_id"));
+
   m.def("available_games", []() -> std::vector<std::string> {
-    std::vector<std::string> games;
-#ifdef DINOBOARD_GAME_TICTACTOE
-    games.push_back("tictactoe");
-#endif
-#ifdef DINOBOARD_GAME_SPLENDOR
-    games.push_back("splendor");
-#endif
-    return games;
+    py::gil_scoped_release release;
+    return GameRegistry::instance().game_ids();
   });
+
+  py::class_<GameSessionWrapper>(m, "GameSession")
+      .def(py::init<const std::string&, std::uint64_t, const std::string&, bool>(),
+           py::arg("game_id"),
+           py::arg("seed") = 0xC0FFEE,
+           py::arg("model_path") = "",
+           py::arg("use_filter") = false)
+      .def_property_readonly("is_terminal", &GameSessionWrapper::is_terminal)
+      .def_property_readonly("is_turn_start", &GameSessionWrapper::is_turn_start)
+      .def_property_readonly("current_player", &GameSessionWrapper::current_player)
+      .def_property_readonly("winner", &GameSessionWrapper::winner)
+      .def_property_readonly("num_players", &GameSessionWrapper::num_players)
+      .def_property_readonly("game_id", &GameSessionWrapper::game_id)
+      .def("get_state_dict", &GameSessionWrapper::get_state_dict)
+      .def("get_action_info", &GameSessionWrapper::get_action_info)
+      .def("get_legal_actions", &GameSessionWrapper::get_legal_actions)
+      .def("get_all_legal_actions", &GameSessionWrapper::get_all_legal_actions)
+      .def("apply_action", &GameSessionWrapper::apply_action)
+      .def("apply_observation", &GameSessionWrapper::apply_observation,
+           py::arg("action"),
+           py::arg("pre_events") = py::list(),
+           py::arg("post_events") = py::list())
+      .def("apply_event", &GameSessionWrapper::apply_event,
+           py::arg("phase"), py::arg("kind"), py::arg("payload"))
+      .def("apply_initial_observation", &GameSessionWrapper::apply_initial_observation,
+           py::arg("perspective_player"), py::arg("initial_observation"))
+      .def("get_belief_snapshot", &GameSessionWrapper::get_belief_snapshot)
+      .def("get_ai_action", &GameSessionWrapper::get_ai_action,
+           py::arg("simulations") = 200,
+           py::arg("temperature") = 0.0)
+      .def("get_heuristic_action", &GameSessionWrapper::get_heuristic_action)
+      .def("configure_tail_solve", &GameSessionWrapper::configure_tail_solve,
+           py::arg("enabled"),
+           py::arg("depth_limit") = 10,
+           py::arg("node_budget") = 200000LL)
+      .def("apply_ai_action", &GameSessionWrapper::apply_ai_action,
+           py::arg("simulations") = 200,
+           py::arg("temperature") = 0.0);
 }

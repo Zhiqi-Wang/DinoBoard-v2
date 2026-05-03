@@ -6,22 +6,17 @@
     "max": 2
   },
   "action_space": 9,
-  "feature_dim": 27,
-  "has_hidden_info": false,
-  "has_random_nodes": false,
+  "feature_dim": 28,
   "training": {
     "simulations": 100,
     "c_puct": 1.4,
     "temperature": 1.0,
-    "temperature_schedule": {
-      "enabled": true,
-      "initial": 1.0,
-      "final": 0.1,
-      "decay_plies": 6
-    },
+    "temperature_initial": 1.0,
+    "temperature_final": 0.1,
+    "temperature_decay_plies": 6,
     "dirichlet_alpha": 1.0,
     "dirichlet_epsilon": 0.25,
-    "dirichlet_on_first_n_plies": 0,
+    "dirichlet_on_first_n_plies": 9,
     "max_game_plies": 9,
     "episodes_per_step": 200,
     "batch_size": 256,
@@ -30,7 +25,10 @@
   },
   "network": {
     "type": "mlp",
-    "hidden_layers": [64, 64],
+    "hidden_layers": [
+      64,
+      64
+    ],
     "activation": "relu"
   }
 }

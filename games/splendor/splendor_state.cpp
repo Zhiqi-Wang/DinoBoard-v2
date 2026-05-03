@@ -11,14 +11,6 @@ namespace board_ai::splendor {
 
 namespace {
 
-std::uint64_t splitmix64(std::uint64_t& x) {
-  x += 0x9e3779b97f4a7c15ULL;
-  std::uint64_t z = x;
-  z = (z ^ (z >> 30U)) * 0xbf58476d1ce4e5b9ULL;
-  z = (z ^ (z >> 27U)) * 0x94d049bb133111ebULL;
-  return z ^ (z >> 31U);
-}
-
 template <typename T>
 T take_random_from_vector(std::vector<T>& deck, std::uint64_t& nonce) {
   if (deck.empty()) return T{};
@@ -103,25 +95,33 @@ const std::array<std::array<std::int8_t, kColorCount>, 12>& splendor_nobles() {
   return nobles;
 }
 
-SplendorPersistentState::SplendorPersistentState(std::shared_ptr<const SplendorPersistentNode> node)
+template <int NPlayers>
+SplendorPersistentState<NPlayers>::SplendorPersistentState(
+    std::shared_ptr<const SplendorPersistentNode<NPlayers>> node)
     : node_(std::move(node)) {}
 
-SplendorPersistentState SplendorPersistentState::root_from_seed(std::uint64_t seed) {
-  auto data = std::make_shared<SplendorData>();
+template <int NPlayers>
+SplendorPersistentState<NPlayers> SplendorPersistentState<NPlayers>::root_from_seed(std::uint64_t seed) {
+  using Cfg = SplendorConfig<NPlayers>;
+  auto data = std::make_shared<SplendorData<NPlayers>>();
   data->current_player = 0;
+  data->first_player = 0;
   data->plies = 0;
   data->final_round_remaining = -1;
   data->stage = static_cast<std::int8_t>(SplendorTurnStage::kNormal);
   data->pending_returns = 0;
-  data->pending_noble_slots = {{-1, -1, -1}};
+  data->pending_noble_slots.fill(-1);
   data->pending_nobles_size = 0;
-  data->draw_nonce = seed == 0 ? 0x9e3779b97f4a7c15ULL : seed;
+  data->draw_nonce = sanitize_seed(seed);
   data->winner = -1;
   data->terminal = false;
   data->shared_victory = false;
-  data->scores = {0, 0};
-  data->bank = {4, 4, 4, 4, 4, 5};
-  for (int p = 0; p < kPlayers; ++p) {
+  data->scores = {};
+  for (int c = 0; c < kColorCount; ++c) {
+    data->bank[static_cast<size_t>(c)] = static_cast<std::int8_t>(Cfg::kGemCount);
+  }
+  data->bank[5] = static_cast<std::int8_t>(Cfg::kGoldCount);
+  for (int p = 0; p < Cfg::kPlayers; ++p) {
     data->player_gems[p].fill(0);
     data->player_bonuses[p].fill(0);
     data->player_points[p] = 0;
@@ -153,19 +153,21 @@ SplendorPersistentState SplendorPersistentState::root_from_seed(std::uint64_t se
 
   std::vector<int> noble_ids(12);
   for (int i = 0; i < 12; ++i) noble_ids[static_cast<size_t>(i)] = i;
-  data->nobles_size = 3;
-  for (int i = 0; i < 3; ++i) {
+  data->nobles_size = static_cast<std::int8_t>(Cfg::kNobleCount);
+  data->nobles.fill(-1);
+  for (int i = 0; i < Cfg::kNobleCount; ++i) {
     data->nobles[static_cast<size_t>(i)] =
         static_cast<std::int16_t>(take_random_from_vector(noble_ids, data->draw_nonce));
   }
 
-  auto node = std::make_shared<SplendorPersistentNode>();
+  auto node = std::make_shared<SplendorPersistentNode<NPlayers>>();
   node->action_from_parent = -1;
   node->materialized = std::move(data);
-  return SplendorPersistentState(std::move(node));
+  return SplendorPersistentState<NPlayers>(std::move(node));
 }
 
-const SplendorData& SplendorPersistentState::data() const {
+template <int NPlayers>
+const SplendorData<NPlayers>& SplendorPersistentState<NPlayers>::data() const {
   if (!node_) {
     throw std::runtime_error("SplendorPersistentState is not initialized");
   }
@@ -175,100 +177,135 @@ const SplendorData& SplendorPersistentState::data() const {
   if (!node_->parent) {
     throw std::runtime_error("SplendorPersistentState root is missing materialized data");
   }
-  const SplendorData& parent_data = SplendorPersistentState(node_->parent).data();
-  auto next = std::make_shared<SplendorData>(SplendorRules::apply_action_copy(parent_data, node_->action_from_parent));
+  const SplendorData<NPlayers>& parent_data = SplendorPersistentState<NPlayers>(node_->parent).data();
+  auto next = std::make_shared<SplendorData<NPlayers>>(
+      SplendorRules<NPlayers>::apply_action_copy(parent_data, node_->action_from_parent));
   node_->materialized = next;
   return *node_->materialized;
 }
 
-SplendorPersistentState SplendorPersistentState::advance(ActionId action) const {
-  auto node = std::make_shared<SplendorPersistentNode>();
+template <int NPlayers>
+SplendorPersistentState<NPlayers> SplendorPersistentState<NPlayers>::advance(ActionId action) const {
+  auto node = std::make_shared<SplendorPersistentNode<NPlayers>>();
   node->parent = node_;
   node->action_from_parent = action;
-  return SplendorPersistentState(std::move(node));
+  return SplendorPersistentState<NPlayers>(std::move(node));
 }
 
-StateHash64 SplendorPersistentState::state_hash(bool include_hidden_rng, std::uint64_t rng_salt) const {
-  const SplendorData& d = data();
+template <int NPlayers>
+StateHash64 SplendorPersistentState<NPlayers>::state_hash(bool include_hidden_rng, std::uint64_t rng_salt) const {
+  using Cfg = SplendorConfig<NPlayers>;
+  const SplendorData<NPlayers>& d = data();
   std::size_t h = 0;
-  auto mix = [&h](std::size_t v) {
-    h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6U) + (h >> 2U);
-  };
-  mix(static_cast<std::size_t>(d.current_player + 3));
-  mix(static_cast<std::size_t>(d.plies + 17));
-  mix(static_cast<std::size_t>(d.final_round_remaining + 9));
-  mix(static_cast<std::size_t>(d.stage + 21));
-  mix(static_cast<std::size_t>(d.pending_returns + 25));
-  mix(static_cast<std::size_t>(d.pending_nobles_size + 27));
-  for (auto slot : d.pending_noble_slots) mix(static_cast<std::size_t>(slot + 29));
-  mix(static_cast<std::size_t>(d.winner + 11));
-  mix(static_cast<std::size_t>(d.terminal ? 1 : 0));
+  hash_combine(h,static_cast<std::size_t>(d.current_player + 3));
+  hash_combine(h,static_cast<std::size_t>(d.first_player + 5));
+  hash_combine(h,static_cast<std::size_t>(d.plies + 17));
+  hash_combine(h,static_cast<std::size_t>(d.final_round_remaining + 9));
+  hash_combine(h,static_cast<std::size_t>(d.stage + 21));
+  hash_combine(h,static_cast<std::size_t>(d.pending_returns + 25));
+  hash_combine(h,static_cast<std::size_t>(d.pending_nobles_size + 27));
+  for (auto slot : d.pending_noble_slots) hash_combine(h,static_cast<std::size_t>(slot + 29));
+  hash_combine(h,static_cast<std::size_t>(d.winner + 11));
+  hash_combine(h,static_cast<std::size_t>(d.terminal ? 1 : 0));
   if (include_hidden_rng) {
-    mix(static_cast<std::size_t>(d.draw_nonce));
+    hash_combine(h,static_cast<std::size_t>(d.draw_nonce));
   }
-  for (int v : d.scores) mix(static_cast<std::size_t>(v + 101));
-  for (auto v : d.bank) mix(static_cast<std::size_t>(v + 7));
+  for (int v : d.scores) hash_combine(h,static_cast<std::size_t>(v + 101));
+  for (auto v : d.bank) hash_combine(h,static_cast<std::size_t>(v + 7));
   const int actor = d.current_player;
-  for (int p = 0; p < kPlayers; ++p) {
-    for (auto v : d.player_gems[p]) mix(static_cast<std::size_t>(v + 13));
-    for (auto v : d.player_bonuses[p]) mix(static_cast<std::size_t>(v + 19));
-    mix(static_cast<std::size_t>(d.player_points[p] + 23));
-    mix(static_cast<std::size_t>(d.player_cards_count[p] + 29));
-    mix(static_cast<std::size_t>(d.player_nobles_count[p] + 31));
-    mix(static_cast<std::size_t>(d.reserved_size[p] + 37));
+  for (int p = 0; p < Cfg::kPlayers; ++p) {
+    for (auto v : d.player_gems[p]) hash_combine(h,static_cast<std::size_t>(v + 13));
+    for (auto v : d.player_bonuses[p]) hash_combine(h,static_cast<std::size_t>(v + 19));
+    hash_combine(h,static_cast<std::size_t>(d.player_points[p] + 23));
+    hash_combine(h,static_cast<std::size_t>(d.player_cards_count[p] + 29));
+    hash_combine(h,static_cast<std::size_t>(d.player_nobles_count[p] + 31));
+    hash_combine(h,static_cast<std::size_t>(d.reserved_size[p] + 37));
     for (int i = 0; i < 3; ++i) {
       const std::int16_t cid = d.reserved[p][static_cast<size_t>(i)];
-      const bool visible_to_opponent = d.reserved_visible[p][static_cast<size_t>(i)] != 0;
-      if (include_hidden_rng || p == actor || visible_to_opponent) {
-        mix(static_cast<std::size_t>(cid + 41));
+      const bool visible_to_actor = d.reserved_visible[p][static_cast<size_t>(i)] != 0;
+      if (include_hidden_rng || p == actor || visible_to_actor) {
+        hash_combine(h,static_cast<std::size_t>(cid + 41));
       } else {
-        mix(static_cast<std::size_t>(-1 + 41));
+        hash_combine(h,static_cast<std::size_t>(-1 + 41));
       }
-      mix(static_cast<std::size_t>((visible_to_opponent ? 1 : 0) + 43));
+      hash_combine(h,static_cast<std::size_t>((visible_to_actor ? 1 : 0) + 43));
     }
   }
   for (int t = 0; t < 3; ++t) {
-    mix(static_cast<std::size_t>(d.tableau_size[t] + 47));
-    for (auto cid : d.tableau[t]) mix(static_cast<std::size_t>(cid + 53));
-    mix(static_cast<std::size_t>(d.decks[t].size() + 59));
+    hash_combine(h,static_cast<std::size_t>(d.tableau_size[t] + 47));
+    for (auto cid : d.tableau[t]) hash_combine(h,static_cast<std::size_t>(cid + 53));
+    hash_combine(h,static_cast<std::size_t>(d.decks[t].size() + 59));
     if (include_hidden_rng) {
       const int tail = std::min<int>(3, static_cast<int>(d.decks[t].size()));
       for (int i = 0; i < tail; ++i) {
         const auto cid = d.decks[t][d.decks[t].size() - 1U - static_cast<size_t>(i)];
-        mix(static_cast<std::size_t>(cid + 61 + i));
+        hash_combine(h,static_cast<std::size_t>(cid + 61 + i));
       }
     }
   }
-  mix(static_cast<std::size_t>(d.nobles_size + 67));
-  for (int i = 0; i < 3; ++i) mix(static_cast<std::size_t>(d.nobles[static_cast<size_t>(i)] + 71));
+  hash_combine(h,static_cast<std::size_t>(d.nobles_size + 67));
+  for (int i = 0; i < Cfg::kNobleCount; ++i) {
+    hash_combine(h,static_cast<std::size_t>(d.nobles[static_cast<size_t>(i)] + 71));
+  }
   if (include_hidden_rng) {
-    mix(static_cast<std::size_t>(rng_salt));
+    hash_combine(h,static_cast<std::size_t>(rng_salt));
   }
   return static_cast<StateHash64>(h);
 }
 
-SplendorState::SplendorState() { reset_with_seed(0xC0FFEEu); }
+template <int NPlayers>
+SplendorState<NPlayers>::SplendorState() { reset_with_seed(0xC0FFEEu); }
 
-void SplendorState::reset_with_seed(std::uint64_t seed) {
-  rng_salt = seed == 0 ? 0x9e3779b97f4a7c15ULL : seed;
-  persistent = SplendorPersistentState::root_from_seed(rng_salt);
+template <int NPlayers>
+void SplendorState<NPlayers>::reset_with_seed(std::uint64_t seed) {
+  rng_salt = sanitize_seed(seed);
+  persistent = SplendorPersistentState<NPlayers>::root_from_seed(rng_salt);
   undo_stack.clear();
 }
 
-std::unique_ptr<IGameState> SplendorState::clone_state() const {
-  return std::make_unique<SplendorState>(*this);
-}
-
-StateHash64 SplendorState::state_hash(bool include_hidden_rng) const {
+template <int NPlayers>
+StateHash64 SplendorState<NPlayers>::state_hash(bool include_hidden_rng) const {
   return persistent.state_hash(include_hidden_rng, rng_salt);
 }
 
-int SplendorState::current_player() const {
+template <int NPlayers>
+int SplendorState<NPlayers>::current_player() const {
   return persistent.data().current_player;
 }
 
-bool SplendorState::is_terminal() const {
+template <int NPlayers>
+int SplendorState<NPlayers>::first_player() const {
+  return persistent.data().first_player;
+}
+
+template <int NPlayers>
+bool SplendorState<NPlayers>::is_terminal() const {
   return persistent.data().terminal;
 }
+
+template <int NPlayers>
+bool SplendorState<NPlayers>::is_turn_start() const {
+  return static_cast<SplendorTurnStage>(persistent.data().stage) == SplendorTurnStage::kNormal;
+}
+
+template <int NPlayers>
+int SplendorState<NPlayers>::winner() const {
+  return persistent.data().winner;
+}
+
+template <int NPlayers>
+std::uint64_t SplendorState<NPlayers>::rng_nonce() const {
+  return persistent.data().draw_nonce;
+}
+
+template struct SplendorData<2>;
+template struct SplendorData<3>;
+template struct SplendorData<4>;
+template class SplendorPersistentState<2>;
+template class SplendorPersistentState<3>;
+template class SplendorPersistentState<4>;
+template struct SplendorState<2>;
+template struct SplendorState<3>;
+template struct SplendorState<4>;
 
 }  // namespace board_ai::splendor

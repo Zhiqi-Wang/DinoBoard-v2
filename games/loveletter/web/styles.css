@@ -1,0 +1,259 @@
+.ll-board {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+  min-height: 280px;
+}
+
+.ll-deck-info {
+  font-size: 14px;
+  color: #b0b8c8;
+  text-align: center;
+  padding: 8px;
+  background: #1a1a2e;
+  border-radius: 8px;
+}
+
+.ll-opponents {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.ll-opponent {
+  background: #1e1e3a;
+  border: 2px solid #333;
+  border-radius: 12px;
+  padding: 12px 16px;
+  min-width: 120px;
+  text-align: center;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.ll-opponent.eliminated {
+  opacity: 0.4;
+  border-color: #555;
+}
+
+.ll-opponent.protected {
+  border-color: #4a9;
+  box-shadow: 0 0 8px rgba(68, 170, 153, 0.3);
+}
+
+.ll-opponent.current-turn {
+  border-color: #e8a;
+}
+
+.ll-opponent.selectable {
+  cursor: pointer;
+  border-color: #fa0;
+  animation: pulse-border 1s ease-in-out infinite;
+}
+
+.ll-opponent.selectable:hover {
+  box-shadow: 0 0 12px rgba(255, 170, 0, 0.5);
+}
+
+.ll-opponent.selected-target {
+  border-color: #f80;
+  background: #2a2a4a;
+}
+
+@keyframes pulse-border {
+  0%, 100% { box-shadow: 0 0 4px rgba(255, 170, 0, 0.3); }
+  50% { box-shadow: 0 0 12px rgba(255, 170, 0, 0.6); }
+}
+
+.ll-opp-name {
+  font-weight: bold;
+  margin-bottom: 6px;
+  color: #ccc;
+}
+
+.ll-opp-discards {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 6px;
+}
+
+.ll-discard-chip {
+  display: inline-block;
+  font-size: 12px;
+  padding: 2px 8px;
+  background: #2a2a4a;
+  border-radius: 4px;
+  color: #c0c8d8;
+}
+
+.ll-discard-chip.mine {
+  background: #2a3a4a;
+  color: #8bf;
+}
+
+.ll-guard-panel {
+  background: #1a1a2e;
+  border: 1px solid #444;
+  border-radius: 8px;
+  padding: 12px;
+  min-height: 60px;
+}
+
+.ll-guard-target-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.ll-guard-target-row span {
+  color: #bbb;
+  font-size: 14px;
+  min-width: 60px;
+}
+
+.ll-guess-btn {
+  background: #2a2a4a;
+  color: #ddd;
+  border: 1px solid #555;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  min-height: 36px;
+}
+
+.ll-guess-btn:hover {
+  background: #3a3a5a;
+  border-color: #fa0;
+  color: #fff;
+}
+
+/* Player hand area */
+.ll-player-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+}
+
+.ll-hand {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+}
+
+.ll-card {
+  width: 120px;
+  min-height: 170px;
+  background: #1e1e3a;
+  border: 2px solid #444;
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  cursor: default;
+  transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
+  position: relative;
+}
+
+.ll-card.playable {
+  cursor: pointer;
+  border-color: #668;
+}
+
+.ll-card.playable:hover {
+  border-color: #88a;
+  transform: translateY(-4px);
+  box-shadow: 0 4px 16px rgba(100, 100, 200, 0.3);
+}
+
+.ll-card.selected {
+  border-color: #fa0;
+  box-shadow: 0 0 16px rgba(255, 170, 0, 0.4);
+  transform: translateY(-6px);
+}
+
+.ll-card:disabled {
+  opacity: 0.5;
+}
+
+.ll-card-value {
+  font-size: 28px;
+  font-weight: bold;
+  color: #e8c860;
+}
+
+.ll-card-name {
+  font-size: 16px;
+  font-weight: bold;
+  color: #ddd;
+}
+
+.ll-card-effect {
+  font-size: 13px;
+  color: #c0c0d0;
+  text-align: center;
+  line-height: 1.4;
+}
+
+/* Card color accents — stronger gradients + left stripe */
+.ll-card.card-1 { background: linear-gradient(135deg, #1a3555 0%, #1e1e3a 55%); border-left: 3px solid #3b82f6; }
+.ll-card.card-2 { background: linear-gradient(135deg, #1a4535 0%, #1e1e3a 55%); border-left: 3px solid #22c55e; }
+.ll-card.card-3 { background: linear-gradient(135deg, #453520 0%, #1e1e3a 55%); border-left: 3px solid #f59e0b; }
+.ll-card.card-4 { background: linear-gradient(135deg, #2e1a45 0%, #1e1e3a 55%); border-left: 3px solid #8b5cf6; }
+.ll-card.card-5 { background: linear-gradient(135deg, #1a4545 0%, #1e1e3a 55%); border-left: 3px solid #06b6d4; }
+.ll-card.card-6 { background: linear-gradient(135deg, #45451a 0%, #1e1e3a 55%); border-left: 3px solid #eab308; }
+.ll-card.card-7 { background: linear-gradient(135deg, #451a30 0%, #1e1e3a 55%); border-left: 3px solid #ec4899; }
+.ll-card.card-8 { background: linear-gradient(135deg, #551a1a 0%, #2e1e1e 55%); border-left: 3px solid #ef4444; }
+
+.ll-pending-hint {
+  color: #fa0;
+  font-size: 14px;
+  text-align: center;
+  animation: fade-hint 1.5s ease-in-out infinite;
+}
+
+@keyframes fade-hint {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.ll-my-discards {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.ll-discard-label {
+  color: #999;
+  font-size: 13px;
+}
+
+.ll-dead-msg {
+  color: #f55;
+  font-size: 18px;
+  font-weight: bold;
+  text-align: center;
+  padding: 20px;
+}
+
+/* Flying card colors (animation) */
+.anim-flying-card.ll-card-fly {
+  background: #2a2a4a;
+  border: 2px solid #888;
+  border-radius: 8px;
+  padding: 4px 8px;
+  color: #e8c860;
+  font-weight: bold;
+  font-size: 16px;
+}

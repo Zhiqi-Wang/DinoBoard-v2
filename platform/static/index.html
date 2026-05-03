@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DinoBoard Intelligence</title>
+<link rel="stylesheet" href="/static/common.css">
+<style>
+.home-stage {
+  padding: 40px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.home-stage h2 {
+  font-size: 28px;
+  font-weight: 800;
+  color: #0f3554;
+  margin-bottom: 8px;
+}
+.home-subtitle {
+  color: #64748b;
+  margin-bottom: 32px;
+  font-size: 15px;
+}
+.game-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+  width: min(680px, 94vw);
+}
+.game-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 16px;
+  background: #f8fafc;
+  border: 1px solid #d1d5db;
+  border-radius: 12px;
+  text-decoration: none;
+  color: #111827;
+  transition: transform 0.15s, box-shadow 0.15s;
+  position: relative;
+}
+.game-card:hover:not(.disabled) {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+}
+.game-card.disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.game-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.game-info {
+  font-size: 13px;
+  color: #64748b;
+}
+.badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: #e0e7ff;
+  color: #3730a3;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+</style>
+</head>
+<body>
+<main class="layout">
+  <aside class="sidebar">
+    <h1>DinoBoard Intelligence</h1>
+    <div class="card">
+      <h2>选择游戏</h2>
+      <div class="muted">点击右侧游戏卡片进入对局</div>
+    </div>
+  </aside>
+  <section class="home-stage">
+    <h2>DinoBoard Intelligence</h2>
+    <div class="home-subtitle">通用棋类 AI 平台</div>
+    <div id="games" class="game-grid"></div>
+  </section>
+</main>
+
+<script>
+async function init() {
+  const resp = await fetch('/api/games/available');
+  const data = await resp.json();
+  const grid = document.getElementById('games');
+
+  for (const game of data.games) {
+    const card = document.createElement('a');
+    card.className = 'game-card' + (game.has_web ? '' : ' disabled');
+    card.href = game.has_web ? '/games/' + game.game_id + '/' : '#';
+    if (!game.has_web) {
+      card.addEventListener('click', function(e) { e.preventDefault(); });
+    }
+
+    const title = document.createElement('div');
+    title.className = 'game-title';
+    title.textContent = game.display_name;
+
+    const info = document.createElement('div');
+    info.className = 'game-info';
+    const p = game.players;
+    info.textContent = p.min === p.max ? p.min + ' 人' : p.min + '-' + p.max + ' 人';
+
+    if (!game.has_web) {
+      const badge = document.createElement('div');
+      badge.className = 'badge';
+      badge.textContent = '即将上线';
+      card.appendChild(badge);
+    }
+
+    card.appendChild(title);
+    card.appendChild(info);
+    grid.appendChild(card);
+  }
+}
+init();
+</script>
+</body>
+</html>

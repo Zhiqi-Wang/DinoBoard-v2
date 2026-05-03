@@ -6,6 +6,7 @@
 
 #include "../core/game_interfaces.h"
 #include "../search/net_mcts.h"
+#include "selfplay_runner.h"
 
 namespace board_ai::runtime {
 
@@ -15,12 +16,24 @@ struct ArenaPlayerConfig {
   int max_depth = 128;
   float value_clip = 1.0f;
   double temperature = 0.0;
+  bool tail_solve_enabled = false;
+  search::TailSolveConfig tail_solve_config{};
+  const search::ITailSolver* tail_solver = nullptr;
+  TailSolveTrigger tail_solve_trigger = nullptr;
+};
+
+struct ArenaPlyStats {
+  bool tail_solved = false;
+  float tail_solve_value = 0.0f;
 };
 
 struct ArenaMatchResult {
   int winner = -1;
   bool draw = false;
   int total_plies = 0;
+  std::vector<ActionId> action_history;
+  std::vector<ArenaPlyStats> ply_stats;
+  int total_traversal_stops = 0;
 };
 
 using PolicyEvaluatorFactory = std::function<
@@ -31,9 +44,11 @@ ArenaMatchResult run_arena_match(
     const IGameRules& rules,
     const IStateValueModel& value_model,
     PolicyEvaluatorFactory evaluator_for_player,
-    const ArenaPlayerConfig& player0_config,
-    const ArenaPlayerConfig& player1_config,
+    const std::vector<ArenaPlayerConfig>& player_configs,
     int max_game_plies = 500,
-    std::uint64_t match_seed = 0);
+    std::uint64_t match_seed = 0,
+    TraversalLimiterFactory limiter_factory = nullptr,
+    IBeliefTracker* belief_tracker = nullptr,
+    GameAdjudicator adjudicator = nullptr);
 
 }  // namespace board_ai::runtime

@@ -1,0 +1,8 @@
+{
+  "ai_use_action_filter": true,
+  "tail_solve": {
+    "enabled": true,
+    "depth_limit": 10,
+    "node_budget": 200000
+  }
+}

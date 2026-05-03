@@ -16,6 +16,7 @@ target_include_directories(dinoboard_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # Search library
 add_library(dinoboard_search STATIC
     search/net_mcts.cpp
+    search/tail_solver.cpp
 )
 target_link_libraries(dinoboard_search PUBLIC dinoboard_core)
 
@@ -38,6 +39,8 @@ endif()
 add_library(dinoboard_runtime STATIC
     runtime/selfplay_runner.cpp
     runtime/arena_runner.cpp
+    runtime/nopeek_support.cpp
+    runtime/heuristic_runner.cpp
 )
 target_link_libraries(dinoboard_runtime PUBLIC dinoboard_core dinoboard_search)
 

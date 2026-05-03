@@ -2,21 +2,13 @@
 
 namespace board_ai::tictactoe {
 
-namespace {
-
-const TicTacToeState* as_ttt(const IGameState& s) {
-  return dynamic_cast<const TicTacToeState*>(&s);
-}
-
-}  // namespace
-
 bool TicTacToeFeatureEncoder::encode(
     const IGameState& state,
     int perspective_player,
     const std::vector<ActionId>& legal_actions,
     std::vector<float>* features,
     std::vector<float>* legal_mask) const {
-  const TicTacToeState* s = as_ttt(state);
+  const auto* s = dynamic_cast<const TicTacToeState*>(&state);
   if (!s || !features || !legal_mask || perspective_player < 0 || perspective_player >= kPlayers) {
     return false;
   }
@@ -30,22 +22,11 @@ bool TicTacToeFeatureEncoder::encode(
     features->push_back(v == opp ? 1.0f : 0.0f);
     features->push_back(v == kEmptyCell ? 1.0f : 0.0f);
   }
+  features->push_back(s->first_player() == perspective_player ? 1.0f : 0.0f);
 
-  legal_mask->assign(static_cast<size_t>(action_space()), 0.0f);
-  for (ActionId a : legal_actions) {
-    if (a >= 0 && a < action_space()) {
-      (*legal_mask)[static_cast<size_t>(a)] = 1.0f;
-    }
-  }
+  fill_legal_mask(action_space(), legal_actions, legal_mask);
 
   return static_cast<int>(features->size()) == feature_dim();
-}
-
-float TicTacToeStateValueModel::terminal_value_for_player(const IGameState& state, int perspective_player) const {
-  const TicTacToeState* s = as_ttt(state);
-  if (!s || !s->terminal) return 0.0f;
-  if (s->winner < 0) return 0.0f;
-  return s->winner == perspective_player ? 1.0f : -1.0f;
 }
 
 }  // namespace board_ai::tictactoe

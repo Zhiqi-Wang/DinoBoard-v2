@@ -20,10 +20,7 @@ class SplitMix64Engine {
   static constexpr result_type max() { return UINT64_MAX; }
 
   result_type operator()() {
-    std::uint64_t z = (state_ += 0x9e3779b97f4a7c15ULL);
-    z = (z ^ (z >> 30U)) * 0xbf58476d1ce4e5b9ULL;
-    z = (z ^ (z >> 27U)) * 0x94d049bb133111ebULL;
-    return z ^ (z >> 31U);
+    return splitmix64(state_);
   }
 
  private:
@@ -128,11 +125,41 @@ ActionId NetMcts::search_root(
     const IGameRules& rules,
     const IStateValueModel& value_model,
     const IPolicyValueEvaluator& evaluator,
-    NetMctsStats* stats) const {
+    NetMctsStats* stats,
+    std::uint64_t seed) const {
   const auto legal_root = rules.legal_actions(root);
   if (legal_root.empty()) {
     if (stats) *stats = {};
     return -1;
+  }
+
+  if (cfg_.tail_solve_enabled && cfg_.tail_solver) {
+    auto solve_state = root.clone_state();
+    const TailSolveResult ts = cfg_.tail_solver->solve(
+        *solve_state, rules, value_model, root.current_player(), cfg_.tail_solve_config);
+    if (stats) {
+      stats->tail_solve_attempted = true;
+      stats->tail_solve_completed = !ts.budget_exceeded;
+      stats->tail_solve_elapsed_ms = ts.elapsed_ms;
+    }
+    if (ts.outcome == TailSolveOutcome::kProvenWin && ts.best_action >= 0) {
+      if (stats) {
+        stats->tail_solved = true;
+        stats->tail_solve_outcome = ts.outcome;
+        stats->tail_solve_value = ts.value;
+        stats->simulations_done = 0;
+        stats->root_actions = legal_root;
+        stats->root_action_visits.assign(legal_root.size(), 0);
+        for (size_t i = 0; i < legal_root.size(); ++i) {
+          if (legal_root[i] == ts.best_action) {
+            stats->root_action_visits[i] = 1;
+            break;
+          }
+        }
+        stats->best_action_value = static_cast<double>(ts.value);
+      }
+      return ts.best_action;
+    }
   }
 
   const auto t0 = std::chrono::steady_clock::now();
@@ -141,19 +168,23 @@ ActionId NetMcts::search_root(
   nodes.reserve(static_cast<size_t>(std::max(512, cfg_.simulations * 2)));
   nodes.push_back(Node{root.current_player(), false, 0, 0.0f, {}});
 
-  auto expand_node = [&](Node& node, const IGameState& state) -> float {
+  auto expand_node = [&](Node& node, const IGameState& state) -> std::vector<float> {
+    const int np = state.num_players();
     const auto legal = rules.legal_actions(state);
     if (legal.empty()) {
       node.expanded = true;
       node.edges.clear();
-      return value_model.terminal_value_for_player(state, node.to_play);
+      return value_model.terminal_values(state);
     }
     std::vector<float> priors;
-    float v = 0.0f;
-    const bool ok = evaluator.evaluate(state, node.to_play, legal, &priors, &v);
-    if (!ok || priors.size() != legal.size()) {
-      priors.assign(legal.size(), 1.0f / static_cast<float>(legal.size()));
-      v = 0.0f;
+    std::vector<float> values;
+    const bool ok = evaluator.evaluate(state, node.to_play, legal, &priors, &values);
+    if (!ok) {
+      throw std::runtime_error("MCTS: evaluator.evaluate() failed — model not loaded or inference error");
+    }
+    if (priors.size() != legal.size()) {
+      throw std::runtime_error("MCTS: evaluator returned " + std::to_string(priors.size()) +
+          " priors but " + std::to_string(legal.size()) + " legal actions");
     }
 
     float sum = 0.0f;
@@ -174,16 +205,28 @@ ActionId NetMcts::search_root(
       node.edges.push_back(std::move(edge));
     }
     node.expanded = true;
-    return clip_value(v, cfg_.value_clip);
+    return values;
   };
 
   (void)expand_node(nodes[0], root);
+  // Dirichlet noise must be seeded deterministically so training runs are
+  // reproducible. Callers that care about reproducibility pass a non-zero seed;
+  // the ply-level seed in selfplay/arena covers this. seed == 0 falls back to
+  // a wall-clock derivation for ad-hoc/interactive callers that don't care.
+  const std::uint64_t dirichlet_seed = (seed != 0)
+      ? (seed ^ 0xA076178CDFB1AC2DULL ^
+         static_cast<std::uint64_t>(root.current_player() + 13))
+      : (static_cast<std::uint64_t>(t0.time_since_epoch().count()) ^
+         static_cast<std::uint64_t>(root.current_player() + 13));
   apply_root_dirichlet_noise(
       nodes[0],
       cfg_.root_dirichlet_alpha,
       cfg_.root_dirichlet_epsilon,
-      static_cast<std::uint64_t>(t0.time_since_epoch().count()) ^
-          static_cast<std::uint64_t>(root.current_player() + 13));
+      dirichlet_seed);
+
+  const int np = root.num_players();
+  std::vector<std::vector<double>> root_edge_values(
+      nodes[0].edges.size(), std::vector<double>(static_cast<size_t>(np), 0.0));
 
   const int simulations = std::max(1, cfg_.simulations);
   for (int sim = 0; sim < simulations; ++sim) {
@@ -200,11 +243,10 @@ ActionId NetMcts::search_root(
     int cur_idx = 0;
     path_nodes.push_back(cur_idx);
 
-    float leaf_value = 0.0f;
+    std::vector<float> leaf_values;
     int depth = 0;
     bool skip_limiter_once = false;
     while (depth < cfg_.max_depth) {
-      Node& cur = nodes[cur_idx];
       if (!skip_limiter_once && cfg_.traversal_limiter != nullptr) {
         std::unique_ptr<IGameState> parent_state{};
         const IGameState* parent_ptr = nullptr;
@@ -217,6 +259,7 @@ ActionId NetMcts::search_root(
           parent_action = path_actions.back();
         }
         if (cfg_.traversal_limiter->should_stop_with_parent(root, *sim_state, parent_ptr, parent_action, depth)) {
+          if (stats) ++stats->traversal_stops;
           if (parent_ptr == nullptr && !path_undos.empty() && !path_actions.empty()) {
             parent_state = sim_state->clone_state();
             rules.undo_action(*parent_state, path_undos.back());
@@ -229,29 +272,32 @@ ActionId NetMcts::search_root(
             if (!path_edges.empty() && path_nodes.size() >= 2) {
               const int parent_idx = path_nodes[path_nodes.size() - 2];
               const int parent_edge_idx = path_edges.back();
-              Edge& parent_edge = nodes[parent_idx].edges[parent_edge_idx];
               const StateHash64 sampled_hash = sim_state->state_hash(true);
               int rerouted_child = -1;
-              if (parent_edge.child >= 0 && parent_edge.has_child_state_hash &&
-                  parent_edge.child_state_hash == sampled_hash) {
-                rerouted_child = parent_edge.child;
-              } else {
-                for (const auto& entry : parent_edge.chance_children) {
-                  if (entry.first == sampled_hash) {
-                    rerouted_child = entry.second;
-                    break;
+              {
+                const Edge& pe = nodes[parent_idx].edges[parent_edge_idx];
+                if (pe.child >= 0 && pe.has_child_state_hash &&
+                    pe.child_state_hash == sampled_hash) {
+                  rerouted_child = pe.child;
+                } else {
+                  for (const auto& entry : pe.chance_children) {
+                    if (entry.first == sampled_hash) {
+                      rerouted_child = entry.second;
+                      break;
+                    }
                   }
                 }
-                if (rerouted_child < 0) {
-                  nodes.push_back(Node{sim_state->current_player(), false, 0, 0.0f, {}});
-                  rerouted_child = static_cast<int>(nodes.size()) - 1;
-                  if (parent_edge.child < 0 || !parent_edge.has_child_state_hash) {
-                    parent_edge.child = rerouted_child;
-                    parent_edge.child_state_hash = sampled_hash;
-                    parent_edge.has_child_state_hash = true;
-                  } else {
-                    parent_edge.chance_children.push_back({sampled_hash, rerouted_child});
-                  }
+              }
+              if (rerouted_child < 0) {
+                nodes.push_back(Node{sim_state->current_player(), false, 0, 0.0f, {}});
+                rerouted_child = static_cast<int>(nodes.size()) - 1;
+                Edge& pe = nodes[parent_idx].edges[parent_edge_idx];
+                if (pe.child < 0 || !pe.has_child_state_hash) {
+                  pe.child = rerouted_child;
+                  pe.child_state_hash = sampled_hash;
+                  pe.has_child_state_hash = true;
+                } else {
+                  pe.chance_children.push_back({sampled_hash, rerouted_child});
                 }
               }
               if (rerouted_child >= 0 && rerouted_child != cur_idx) {
@@ -263,32 +309,32 @@ ActionId NetMcts::search_root(
             continue;
           }
           if (stop_result.action == TraversalStopAction::kUseLeafValue) {
-            leaf_value = clip_value(stop_result.leaf_value, cfg_.value_clip);
+            leaf_values = stop_result.leaf_values;
           } else {
-            leaf_value = expand_node(cur, *sim_state);
+            leaf_values = expand_node(nodes[cur_idx], *sim_state);
           }
           break;
         }
       }
       skip_limiter_once = false;
       if (sim_state->is_terminal()) {
-        leaf_value = value_model.terminal_value_for_player(*sim_state, cur.to_play);
+        leaf_values = value_model.terminal_values(*sim_state);
         break;
       }
-      if (!cur.expanded) {
-        leaf_value = expand_node(cur, *sim_state);
+      if (!nodes[cur_idx].expanded) {
+        leaf_values = expand_node(nodes[cur_idx], *sim_state);
         break;
       }
-      if (cur.edges.empty()) {
-        leaf_value = value_model.terminal_value_for_player(*sim_state, cur.to_play);
+      if (nodes[cur_idx].edges.empty()) {
+        leaf_values = value_model.terminal_values(*sim_state);
         break;
       }
 
       int best_edge = 0;
       float best_score = -std::numeric_limits<float>::infinity();
-      const float sqrt_parent = std::sqrt(static_cast<float>(std::max(1, cur.visit_count)));
-      for (int ei = 0; ei < static_cast<int>(cur.edges.size()); ++ei) {
-        const Edge& e = cur.edges[ei];
+      const float sqrt_parent = std::sqrt(static_cast<float>(std::max(1, nodes[cur_idx].visit_count)));
+      for (int ei = 0; ei < static_cast<int>(nodes[cur_idx].edges.size()); ++ei) {
+        const Edge& e = nodes[cur_idx].edges[ei];
         float q = 0.0f;
         if (e.visit_count > 0) q = e.value_sum / static_cast<float>(e.visit_count);
         const float u = cfg_.c_puct * e.prior * sqrt_parent / (1.0f + static_cast<float>(e.visit_count));
@@ -299,7 +345,7 @@ ActionId NetMcts::search_root(
         }
       }
 
-      const ActionId chosen_action = cur.edges[best_edge].action;
+      const ActionId chosen_action = nodes[cur_idx].edges[best_edge].action;
       const UndoToken undo_tok = rules.do_action_fast(*sim_state, chosen_action);
       const int next_player = sim_state->current_player();
       const StateHash64 next_hash = sim_state->state_hash(true);
@@ -317,13 +363,12 @@ ActionId NetMcts::search_root(
         chosen_child = static_cast<int>(nodes.size()) - 1;
         bind_edge_to_child(best_edge, chosen_child, next_hash);
       } else {
-        Edge& edge = nodes[cur_idx].edges[best_edge];
-        if (!edge.has_child_state_hash) {
-          edge.child_state_hash = next_hash;
-          edge.has_child_state_hash = true;
-        } else if (edge.child_state_hash != next_hash) {
+        if (!nodes[cur_idx].edges[best_edge].has_child_state_hash) {
+          nodes[cur_idx].edges[best_edge].child_state_hash = next_hash;
+          nodes[cur_idx].edges[best_edge].has_child_state_hash = true;
+        } else if (nodes[cur_idx].edges[best_edge].child_state_hash != next_hash) {
           int matched_child = -1;
-          for (const auto& item : edge.chance_children) {
+          for (const auto& item : nodes[cur_idx].edges[best_edge].chance_children) {
             if (item.first == next_hash) {
               matched_child = item.second;
               break;
@@ -334,7 +379,7 @@ ActionId NetMcts::search_root(
           } else {
             nodes.push_back(Node{next_player, false, 0, 0.0f, {}});
             chosen_child = static_cast<int>(nodes.size()) - 1;
-            edge.chance_children.push_back({next_hash, chosen_child});
+            nodes[cur_idx].edges[best_edge].chance_children.push_back({next_hash, chosen_child});
           }
         }
       }
@@ -346,33 +391,59 @@ ActionId NetMcts::search_root(
       depth += 1;
     }
 
-    float v = clip_value(leaf_value, cfg_.value_clip);
     for (int i = static_cast<int>(path_nodes.size()) - 1; i >= 0; --i) {
       const int node_idx = path_nodes[static_cast<size_t>(i)];
       Node& n = nodes[node_idx];
+      const size_t tp = static_cast<size_t>(n.to_play);
+      const float v = (tp < leaf_values.size())
+          ? clip_value(leaf_values[tp], cfg_.value_clip) : 0.0f;
       n.visit_count += 1;
       n.value_sum += v;
       if (i > 0) {
         const int parent_idx = path_nodes[static_cast<size_t>(i - 1)];
-        const bool same_player = (nodes[parent_idx].to_play == n.to_play);
-        const float parent_v = same_player ? v : -v;
         const int parent_edge_idx = path_edges[static_cast<size_t>(i - 1)];
+        const size_t parent_tp = static_cast<size_t>(nodes[parent_idx].to_play);
+        const float pv = (parent_tp < leaf_values.size())
+            ? clip_value(leaf_values[parent_tp], cfg_.value_clip) : 0.0f;
         Edge& parent_edge = nodes[parent_idx].edges[parent_edge_idx];
         parent_edge.visit_count += 1;
-        parent_edge.value_sum += parent_v;
-        v = parent_v;
+        parent_edge.value_sum += pv;
+        if (parent_idx == 0) {
+          auto& rev = root_edge_values[static_cast<size_t>(parent_edge_idx)];
+          for (int p = 0; p < np; ++p) {
+            const float cv = (static_cast<size_t>(p) < leaf_values.size())
+                ? static_cast<double>(clip_value(leaf_values[static_cast<size_t>(p)], cfg_.value_clip))
+                : 0.0;
+            rev[static_cast<size_t>(p)] += cv;
+          }
+        }
       }
     }
   }
 
   const Node& root_node = nodes[0];
+  // Random tiebreak on ties in visit_count so the returned action doesn't
+  // systematically favor low-index actions. Using a seed keeps this
+  // reproducible across runs with the same seed.
   int best_edge = 0;
   int best_visit = -1;
+  std::vector<int> tied_edges;
   for (int ei = 0; ei < static_cast<int>(root_node.edges.size()); ++ei) {
-    if (root_node.edges[ei].visit_count > best_visit) {
-      best_visit = root_node.edges[ei].visit_count;
-      best_edge = ei;
+    const int vc = root_node.edges[ei].visit_count;
+    if (vc > best_visit) {
+      best_visit = vc;
+      tied_edges.clear();
+      tied_edges.push_back(ei);
+    } else if (vc == best_visit) {
+      tied_edges.push_back(ei);
     }
+  }
+  if (tied_edges.size() == 1) {
+    best_edge = tied_edges.front();
+  } else if (!tied_edges.empty()) {
+    SplitMix64Engine tiebreak_rng(seed ^ 0xCC9E2D51FBF7B96DULL);
+    std::uniform_int_distribution<size_t> pick(0, tied_edges.size() - 1);
+    best_edge = tied_edges[pick(tiebreak_rng)];
   }
 
   if (stats) {
@@ -393,6 +464,25 @@ ActionId NetMcts::search_root(
     float q = 0.0f;
     if (best.visit_count > 0) q = best.value_sum / static_cast<float>(best.visit_count);
     stats->best_action_value = static_cast<double>(clip_value(q, cfg_.value_clip));
+    stats->root_values.resize(static_cast<size_t>(np));
+    if (best.visit_count > 0) {
+      const auto& rev = root_edge_values[static_cast<size_t>(best_edge)];
+      for (int p = 0; p < np; ++p) {
+        stats->root_values[static_cast<size_t>(p)] = rev[static_cast<size_t>(p)] / best.visit_count;
+      }
+    }
+    stats->root_edge_values.resize(root_node.edges.size());
+    for (size_t ei = 0; ei < root_node.edges.size(); ++ei) {
+      auto& out = stats->root_edge_values[ei];
+      out.resize(static_cast<size_t>(np), 0.0);
+      const int vc = root_node.edges[ei].visit_count;
+      if (vc > 0) {
+        const auto& rev = root_edge_values[ei];
+        for (int p = 0; p < np; ++p) {
+          out[static_cast<size_t>(p)] = rev[static_cast<size_t>(p)] / vc;
+        }
+      }
+    }
   }
   return root_node.edges[best_edge].action;
 }

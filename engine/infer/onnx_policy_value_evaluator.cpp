@@ -3,8 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <filesystem>
 #include <limits>
+#include <sys/stat.h>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -23,8 +23,6 @@ static void masked_softmax(
     const std::vector<float>& logits,
     const std::vector<float>& mask,
     const std::vector<ActionId>& legal_actions,
-    const IFeatureEncoder* encoder,
-    int perspective_player,
     std::vector<float>* out) {
   out->assign(legal_actions.size(), 0.0f);
   if (legal_actions.empty() || logits.empty() || mask.empty()) {
@@ -32,8 +30,7 @@ static void masked_softmax(
   }
   float max_logit = -std::numeric_limits<float>::infinity();
   for (ActionId a : legal_actions) {
-    const ActionId canonical = encoder ? encoder->canonicalize_action(a, perspective_player) : a;
-    const int idx = static_cast<int>(canonical);
+    const int idx = static_cast<int>(a);
     if (idx >= 0 && idx < static_cast<int>(logits.size()) && idx < static_cast<int>(mask.size()) && mask[idx] > 0.0f) {
       max_logit = std::max(max_logit, logits[idx]);
     }
@@ -45,9 +42,7 @@ static void masked_softmax(
   }
   float z = 0.0f;
   for (size_t i = 0; i < legal_actions.size(); ++i) {
-    const ActionId canonical = encoder ? encoder->canonicalize_action(legal_actions[i], perspective_player)
-                                       : legal_actions[i];
-    const int idx = static_cast<int>(canonical);
+    const int idx = static_cast<int>(legal_actions[i]);
     if (idx >= 0 && idx < static_cast<int>(logits.size()) && idx < static_cast<int>(mask.size()) && mask[idx] > 0.0f) {
       const float e = std::exp(logits[idx] - max_logit);
       (*out)[i] = e;
@@ -136,23 +131,24 @@ struct OnnxPolicyValueEvaluator::Impl {
 };
 
 namespace {
-std::mutex g_onnx_session_cache_mu;
-std::unordered_map<std::string, std::shared_ptr<CachedOrtSessionBundle>> g_onnx_session_cache;
+// Heap-allocated, never destroyed — avoids static destruction order issues
+// that cause "mutex lock failed" crashes at process exit.
+struct OnnxSessionCache {
+  std::mutex mu;
+  std::unordered_map<std::string, std::shared_ptr<CachedOrtSessionBundle>> map;
+};
+OnnxSessionCache& session_cache() {
+  static auto* cache = new OnnxSessionCache();
+  return *cache;
+}
 constexpr std::size_t kMaxCachedOrtSessions = 8;
 
 std::string make_session_cache_key(const std::string& model_path, const OnnxEvaluatorConfig& cfg) {
   std::string model_fingerprint = "missing";
-  try {
-    namespace fs = std::filesystem;
-    const fs::path p(model_path);
-    if (fs::exists(p)) {
-      const auto file_size = fs::file_size(p);
-      const auto write_time = fs::last_write_time(p).time_since_epoch().count();
-      model_fingerprint = std::to_string(static_cast<unsigned long long>(file_size)) + "@" +
-          std::to_string(static_cast<long long>(write_time));
-    }
-  } catch (...) {
-    model_fingerprint = "stat_error";
+  struct stat st{};
+  if (::stat(model_path.c_str(), &st) == 0) {
+    model_fingerprint = std::to_string(static_cast<unsigned long long>(st.st_size)) + "@" +
+        std::to_string(static_cast<long long>(st.st_mtime));
   }
   return model_path + "|fp=" + model_fingerprint + "|intra=" + std::to_string(std::max(1, cfg.intra_threads)) +
       "|inter=" + std::to_string(std::max(1, cfg.inter_threads));
@@ -167,7 +163,7 @@ OnnxPolicyValueEvaluator::OnnxPolicyValueEvaluator(
     : model_path_(std::move(model_path)), encoder_(encoder), cfg_(cfg), ready_(false) {
   if (!encoder_) {
     last_error_ = "encoder is null";
-    return;
+    throw std::runtime_error("OnnxPolicyValueEvaluator: encoder is null");
   }
 
 #if defined(BOARD_AI_WITH_ONNX) && BOARD_AI_WITH_ONNX
@@ -175,9 +171,10 @@ OnnxPolicyValueEvaluator::OnnxPolicyValueEvaluator(
     const std::string cache_key = make_session_cache_key(model_path_, cfg_);
     std::shared_ptr<CachedOrtSessionBundle> bundle;
     {
-      std::lock_guard<std::mutex> lk(g_onnx_session_cache_mu);
-      auto it = g_onnx_session_cache.find(cache_key);
-      if (it != g_onnx_session_cache.end()) {
+      auto& cache = session_cache();
+      std::lock_guard<std::mutex> lk(cache.mu);
+      auto it = cache.map.find(cache_key);
+      if (it != cache.map.end()) {
         bundle = it->second;
       }
       if (!bundle) {
@@ -208,17 +205,17 @@ OnnxPolicyValueEvaluator::OnnxPolicyValueEvaluator(
         bundle->input_name = get_session_name(bundle->session.get(), 0, allocator, true);
         bundle->policy_output_name = get_session_name(bundle->session.get(), 0, allocator, false);
         bundle->value_output_name = get_session_name(bundle->session.get(), 1, allocator, false);
-        g_onnx_session_cache[cache_key] = bundle;
-        while (g_onnx_session_cache.size() > kMaxCachedOrtSessions) {
-          auto erase_it = g_onnx_session_cache.begin();
-          if (erase_it == g_onnx_session_cache.end()) break;
-          if (erase_it->first == cache_key && g_onnx_session_cache.size() > 1) {
+        cache.map[cache_key] = bundle;
+        while (cache.map.size() > kMaxCachedOrtSessions) {
+          auto erase_it = cache.map.begin();
+          if (erase_it == cache.map.end()) break;
+          if (erase_it->first == cache_key && cache.map.size() > 1) {
             ++erase_it;
-            if (erase_it == g_onnx_session_cache.end()) {
-              erase_it = g_onnx_session_cache.begin();
+            if (erase_it == cache.map.end()) {
+              erase_it = cache.map.begin();
             }
           }
-          g_onnx_session_cache.erase(erase_it);
+          cache.map.erase(erase_it);
         }
       }
     }
@@ -228,12 +225,18 @@ OnnxPolicyValueEvaluator::OnnxPolicyValueEvaluator(
   } catch (const std::exception& e) {
     last_error_ = e.what();
     ready_ = false;
+    throw std::runtime_error(
+        std::string("OnnxPolicyValueEvaluator: failed to load model '") +
+        model_path_ + "': " + e.what());
   }
 #else
   (void)model_path_;
   (void)cfg_;
   ready_ = false;
   last_error_ = "onnx runtime not enabled at build time";
+  throw std::runtime_error(
+      "OnnxPolicyValueEvaluator: ONNX runtime not enabled at build time. "
+      "Rebuild with BOARD_AI_WITH_ONNX=1 BOARD_AI_ONNXRUNTIME_ROOT=/path/to/onnxruntime");
 #endif
 }
 
@@ -249,20 +252,25 @@ bool OnnxPolicyValueEvaluator::evaluate(
     int perspective_player,
     const std::vector<ActionId>& legal_actions,
     std::vector<float>* priors,
-    float* value) const {
-  if (!priors || !value || !encoder_) return false;
+    std::vector<float>* values) const {
+  if (!priors || !values) {
+    throw std::runtime_error("OnnxPolicyValueEvaluator::evaluate: priors or values pointer is null");
+  }
+  if (!encoder_) {
+    throw std::runtime_error("OnnxPolicyValueEvaluator::evaluate: encoder is null");
+  }
+  const int num_players = state.num_players();
 
   std::vector<float> features;
   std::vector<float> legal_mask;
   if (!encoder_->encode(state, perspective_player, legal_actions, &features, &legal_mask)) {
-    return false;
+    throw std::runtime_error("OnnxPolicyValueEvaluator::evaluate: encoder.encode() failed");
   }
 
 #if defined(BOARD_AI_WITH_ONNX) && BOARD_AI_WITH_ONNX
   if (!ready_ || !impl_) {
-    priors->assign(legal_actions.size(), 1.0f / static_cast<float>(std::max<size_t>(1, legal_actions.size())));
-    *value = 0.0f;
-    return true;
+    throw std::runtime_error("OnnxPolicyValueEvaluator::evaluate: model not loaded (ready=" +
+        std::to_string(ready_) + ", last_error=" + last_error_ + ")");
   }
 
   try {
@@ -296,13 +304,16 @@ bool OnnxPolicyValueEvaluator::evaluate(
     OrtTensorShapePtr policy_shape(raw_policy_shape);
     size_t dim_count = 0;
     throw_on_ort_error(ort_api().GetDimensionsCount(policy_shape.get(), &dim_count));
-    if (dim_count == 0) return false;
+    if (dim_count == 0) {
+      throw std::runtime_error("OnnxPolicyValueEvaluator::evaluate: policy output has 0 dimensions");
+    }
 
     std::vector<int64_t> policy_dims(dim_count, 0);
     throw_on_ort_error(ort_api().GetDimensions(policy_shape.get(), policy_dims.data(), policy_dims.size()));
     const int64_t policy_len64 = policy_dims.back();
     if (policy_len64 <= 0 || policy_len64 > static_cast<int64_t>(std::numeric_limits<int>::max())) {
-      return false;
+      throw std::runtime_error("OnnxPolicyValueEvaluator::evaluate: invalid policy output length: " +
+          std::to_string(policy_len64));
     }
     void* policy_raw = nullptr;
     throw_on_ort_error(ort_api().GetTensorMutableData(policy_output.get(), &policy_raw));
@@ -314,17 +325,45 @@ bool OnnxPolicyValueEvaluator::evaluate(
     void* value_raw = nullptr;
     throw_on_ort_error(ort_api().GetTensorMutableData(value_output.get(), &value_raw));
     const float* value_ptr = static_cast<const float*>(value_raw);
-    *value = std::max(-1.0f, std::min(1.0f, value_ptr[0]));
 
-    masked_softmax(logits, legal_mask, legal_actions, encoder_, perspective_player, priors);
+    OrtTensorTypeAndShapeInfo* raw_value_shape = nullptr;
+    throw_on_ort_error(ort_api().GetTensorTypeAndShape(value_output.get(), &raw_value_shape));
+    OrtTensorShapePtr value_shape(raw_value_shape);
+    size_t value_dim_count = 0;
+    throw_on_ort_error(ort_api().GetDimensionsCount(value_shape.get(), &value_dim_count));
+    std::vector<int64_t> value_dims(value_dim_count, 0);
+    if (value_dim_count > 0) {
+      throw_on_ort_error(ort_api().GetDimensions(value_shape.get(), value_dims.data(), value_dims.size()));
+    }
+    const int64_t value_len = (value_dim_count > 0) ? value_dims.back() : 1;
+
+    if (value_len >= num_players) {
+      // N-dim model output is perspective-relative: index 0 = perspective_player.
+      // Rotate back to absolute player ordering for MCTS backup.
+      values->resize(static_cast<size_t>(num_players));
+      for (int i = 0; i < num_players; ++i) {
+        const int abs_player = (perspective_player + i) % num_players;
+        (*values)[static_cast<size_t>(abs_player)] =
+            std::max(-1.0f, std::min(1.0f, value_ptr[i]));
+      }
+    } else {
+      const float v = std::max(-1.0f, std::min(1.0f, value_ptr[0]));
+      values->resize(static_cast<size_t>(num_players));
+      const float opponent_v = (num_players > 1)
+          ? -v / static_cast<float>(num_players - 1) : -v;
+      for (int p = 0; p < num_players; ++p) {
+        (*values)[static_cast<size_t>(p)] =
+            (p == perspective_player) ? v : opponent_v;
+      }
+    }
+
+    masked_softmax(logits, legal_mask, legal_actions, priors);
     return true;
-  } catch (...) {
-    return false;
+  } catch (const std::exception& e) {
+    throw std::runtime_error(std::string("OnnxPolicyValueEvaluator::evaluate: ") + e.what());
   }
 #else
-  priors->assign(legal_actions.size(), 1.0f / static_cast<float>(std::max<size_t>(1, legal_actions.size())));
-  *value = 0.0f;
-  return true;
+  throw std::runtime_error("OnnxPolicyValueEvaluator::evaluate: ONNX runtime not enabled at build time");
 #endif
 }
 
