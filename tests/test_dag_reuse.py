@@ -1,6 +1,6 @@
 """Regression: MCTS DAG node reuse is actually happening.
 
-ISMCTS-v2 keys MCTS nodes by (public + current_player_private + step_count).
+ISMCTS keys MCTS nodes by (public + current_player_private + step_count).
 When the same decision state is reachable via different action orderings
 (transpositions) OR via different sampled worlds that converge to the same
 info set, those descents MUST share a tree node via the global hash→

@@ -120,7 +120,7 @@ ActionId select_action_from_visits(
   return actions[dist(rng)];
 }
 
-// ISMCTS-v2 search.
+// ISMCTS search.
 //
 // Algorithm (single simulation):
 //   1. Clone root. If belief_tracker set, call randomize_unseen to sample

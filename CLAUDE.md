@@ -1,4 +1,4 @@
-# DinoBoard v2 Design Principles
+# DinoBoard Design Principles
 
 ## Training Pipeline
 
@@ -21,7 +21,7 @@
 
 The AI decision pipeline — belief tracking, feature encoding, MCTS search — must work solely from observation history. It NEVER reads ground truth's hidden fields.
 
-**Architecture** (post-ISMCTS-v2 refactor, see `docs/plans/ISMCTS_REFACTOR_PLAN.md`):
+**Architecture**:
 
 - **Ground truth** maintains game progress (our C++ engine, external API, or a physical tabletop game). Ground truth advances itself and sends messages to the AI. The AI advances its own dataset + tracker from these messages.
 - **AI dataset** splits into **public fields** (all players see) and **private fields per player** (only that player sees). Declared via:
@@ -45,7 +45,7 @@ The AI decision pipeline — belief tracking, feature encoding, MCTS search — 
 - `tests/test_encoder_respects_hash_scope.py::*[<game>]` — encoder output is bit-equal when opp private changes but (public + own private) stays the same.
 - `tests/test_dag_acyclic.py::*[<game>]` — no cycles in the MCTS DAG, asserted via step_count monotonicity.
 
-**No chance nodes**: physical randomness (deck draws, dice) is handled entirely by root determinization — different simulations sample different worlds, and different observer-visible outcomes automatically produce different hashes → different DAG nodes. No special chance-node machinery (NoPeek / traversal limiter / `chance_outcomes` / afterstate cap / `stochastic_detector`) exists in the framework. Removed in the ISMCTS-v2 refactor.
+**No chance nodes**: physical randomness (deck draws, dice) is handled entirely by root determinization — different simulations sample different worlds, and different observer-visible outcomes automatically produce different hashes → different DAG nodes. No special chance-node machinery (NoPeek / traversal limiter / `chance_outcomes` / afterstate cap / `stochastic_detector`) exists in the framework.
 
 ## Value Head / Multiplayer
 

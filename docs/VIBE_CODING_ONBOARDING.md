@@ -1,4 +1,4 @@
-# Vibe Coding 入门 — DinoBoard-v2
+# Vibe Coding 入门 — DinoBoard
 
 > 给用 AI 辅助开发本项目的新人（及他们使用的 AI 助手）的一页引导。
 > 目标：第一次接触本仓库就能避开大多数踩坑点。
@@ -38,7 +38,7 @@
 ### 按需读
 
 - **加新游戏**：`docs/GAME_DEVELOPMENT_GUIDE.md`（逐字段接口文档，很长，**搜索你需要的小节**而不是通读）+ `docs/NEW_GAME_TEST_GUIDE.md`（9 步验收清单）
-- **改 MCTS**：`docs/MCTS_ALGORITHM.md`（ISMCTS-v2 七个互锁属性，DAG+UCT2 数学动机）
+- **改 MCTS**：`docs/MCTS_ALGORITHM.md`（ISMCTS 七个互锁属性，DAG+UCT2 数学动机）
 - **改前端**：`docs/WEB_DESIGN_PRINCIPLES.md`
 - **看最近在干什么**：`docs/devlog/2026-05-*.md`（日期倒序，最新的最相关）
 
@@ -180,7 +180,7 @@ pytest tests/ -q                        # 跑全套测试
 
 - **6 个完整游戏**：tictactoe / quoridor / splendor / azul / loveletter / coup
 - **大量参数化测试**，所有 canonical game 自动覆盖，0 skip 0 fail
-- **ISMCTS-v2 重构**完成（2026-05-04）：DAG + UCT2 + 结构化 encoder 拆分
+- **ISMCTS 重构**完成（2026-05-04）：DAG + UCT2 + 结构化 encoder 拆分
 - **Coup 启发式 belief tracker**（手写加权联合采样）作为"诈唬游戏怎么做"的范例
 - **待做**：概率化 belief network（framework 层增强，不急）、训练端 GPU 支持（当前纯 CPU）
 
@@ -191,7 +191,7 @@ pytest tests/ -q                        # 跑全套测试
 复制粘贴以下一段作为你和 AI 第一次对话的 system message / first message：
 
 ```
-你正在开发 DinoBoard-v2（/Users/chihchi/claude/DinoBoard-v2）— 一个 AlphaZero 风格的
+你正在开发 DinoBoard（/Users/chihchi/claude/DinoBoard）— 一个 AlphaZero 风格的
 棋牌游戏框架。开始任何工作之前：
 
 1. 阅读 CLAUDE.md（必读，是项目硬约束）

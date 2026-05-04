@@ -522,15 +522,24 @@ function renderPlayerArea(container, gameState, ctx) {
     bonusGroup.appendChild(bonusRow);
     card.appendChild(bonusGroup);
 
-    // Reserved
+    // Reserved — always render 3 fixed slots so the card height doesn't jump
+    // when the player reserves a card mid-game.
     const reserveGroup = document.createElement('div');
     reserveGroup.className = 'player-stat-group reserve-group';
-    reserveGroup.innerHTML = '<div class="player-stat-label">保留卡</div>';
+    reserveGroup.innerHTML = '<div class="player-stat-label">保留卡 (最多 3 张)</div>';
     const reserveRow = document.createElement('div');
     reserveRow.className = 'reserve-row';
     const reserved = pd.reserved || [];
-    for (let ri = 0; ri < reserved.length; ri++) {
+    for (let ri = 0; ri < 3; ri++) {
       const item = reserved[ri];
+      if (!item) {
+        const empty = document.createElement('div');
+        empty.className = 'reserve-slot-empty';
+        empty.dataset.reserved = p + '-' + ri;
+        empty.textContent = '空';
+        reserveRow.appendChild(empty);
+        continue;
+      }
       if (!item.visible && !isHuman) {
         const hidden = document.createElement('div');
         hidden.className = 'reserve-hidden';
@@ -570,10 +579,19 @@ function makeFlyingToken(colorIdx) {
   return el;
 }
 
-function makeFlyingCard() {
-  const el = document.createElement('div');
-  el.className = 'anim-flying-card';
-  return el;
+// Clone a live card DOM element (dev-card / noble-card) so the flyer
+// shows the full card visual instead of a blank rectangle. Strips
+// interactive affordances (buttons, hover hooks) so the cloned sprite
+// is purely decorative mid-flight.
+function cloneCardEl(selector) {
+  const src = document.querySelector(selector);
+  if (!src) return null;
+  const clone = src.cloneNode(true);
+  clone.querySelectorAll('button').forEach(b => b.remove());
+  clone.classList.remove('clickable');
+  clone.style.pointerEvents = 'none';
+  clone.style.margin = '0';
+  return clone;
 }
 
 function describeTransition(prevState, newState, actionInfo, actionId) {
@@ -630,11 +648,12 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
 
     case 'buy_faceup': {
       gemReturnSteps(steps, prev, next, actor);
+      const fromSel = `[data-tableau="${actionInfo.tier}-${actionInfo.slot}"]`;
       steps.push({
         type: 'fly',
-        from: `[data-tableau="${actionInfo.tier}-${actionInfo.slot}"]`,
+        from: fromSel,
         to: `[data-player="${actor}"] .bonus-row`,
-        createElement: makeFlyingCard,
+        createElement: () => cloneCardEl(fromSel),
         hideFrom: true,
         duration: 450,
       });
@@ -643,11 +662,12 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
 
     case 'buy_reserved': {
       gemReturnSteps(steps, prev, next, actor);
+      const fromSel = `[data-reserved="${actor}-${actionInfo.slot}"]`;
       steps.push({
         type: 'fly',
-        from: `[data-reserved="${actor}-${actionInfo.slot}"]`,
+        from: fromSel,
         to: `[data-player="${actor}"] .bonus-row`,
-        createElement: makeFlyingCard,
+        createElement: () => cloneCardEl(fromSel),
         hideFrom: true,
         duration: 450,
       });
@@ -655,11 +675,17 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
     }
 
     case 'reserve_faceup': {
+      // Find the empty reserve slot that will receive the card in the
+      // next state. Reserved cards are appended, so the target slot
+      // index is the count before reserving.
+      const prevReserved = (prev.players[actor].reserved || []).length;
+      const fromSel = `[data-tableau="${actionInfo.tier}-${actionInfo.slot}"]`;
+      const toSel = `[data-player="${actor}"] [data-reserved="${actor}-${prevReserved}"]`;
       steps.push({
         type: 'fly',
-        from: `[data-tableau="${actionInfo.tier}-${actionInfo.slot}"]`,
-        to: `[data-player="${actor}"] .reserve-group`,
-        createElement: makeFlyingCard,
+        from: fromSel,
+        to: toSel,
+        createElement: () => cloneCardEl(fromSel),
         hideFrom: true,
         duration: 450,
       });
@@ -691,10 +717,12 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
     }
 
     case 'choose_noble': {
+      const fromSel = `[data-noble="${actionInfo.noble_slot}"]`;
       steps.push({
         type: 'fly',
-        from: `[data-noble="${actionInfo.noble_slot}"]`,
+        from: fromSel,
         to: `[data-player="${actor}"]`,
+        createElement: () => cloneCardEl(fromSel),
         hideFrom: true,
         duration: 500,
       });

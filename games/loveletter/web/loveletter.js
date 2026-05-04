@@ -156,21 +156,33 @@ function renderBoard(container, gs, ctx) {
     const nameEl = document.createElement('div');
     nameEl.className = 'll-opp-name';
     nameEl.textContent = '玩家' + pi;
-    if (!p.alive) nameEl.textContent += ' (淘汰)';
-    else if (p.protected) nameEl.textContent += ' (保护中)';
     opp.appendChild(nameEl);
 
-    if (p.discards && p.discards.length > 0) {
-      const disc = document.createElement('div');
-      disc.className = 'll-opp-discards';
-      for (const c of p.discards) {
-        const chip = document.createElement('span');
-        chip.className = 'll-discard-chip';
-        chip.textContent = CARD_LABELS[c] + '(' + c + ')';
-        disc.appendChild(chip);
-      }
-      opp.appendChild(disc);
+    const statusEl = document.createElement('div');
+    statusEl.className = 'll-opp-status';
+    if (!p.alive) {
+      statusEl.classList.add('status-eliminated');
+      statusEl.textContent = '淘汰';
+    } else if (p.protected) {
+      statusEl.classList.add('status-protected');
+      statusEl.textContent = '保护中';
+    } else if (pi === currentPlayer) {
+      statusEl.classList.add('status-turn');
+      statusEl.textContent = '行动中';
+    } else {
+      statusEl.textContent = ' ';
     }
+    opp.appendChild(statusEl);
+
+    const disc = document.createElement('div');
+    disc.className = 'll-opp-discards';
+    for (const c of (p.discards || [])) {
+      const chip = document.createElement('span');
+      chip.className = 'll-discard-chip card-' + c;
+      chip.textContent = CARD_LABELS[c] + '(' + c + ')';
+      disc.appendChild(chip);
+    }
+    opp.appendChild(disc);
 
     opponents.appendChild(opp);
   }
@@ -179,14 +191,18 @@ function renderBoard(container, gs, ctx) {
   if (playing && pendingCard === 1 && pendingTarget === -1) {
     const guardPanel = document.createElement('div');
     guardPanel.className = 'll-guard-panel';
+    const title = document.createElement('div');
+    title.className = 'll-guard-panel-title';
+    title.textContent = '侍卫：选择目标并猜测其手牌';
+    guardPanel.appendChild(title);
     const validTgts = getTargetsForCard(1, legalSet);
     for (const t of validTgts) {
-      const p = st.players[t];
       if (t === humanPlayer) continue;
       const row = document.createElement('div');
       row.className = 'll-guard-target-row';
       const label = document.createElement('span');
-      label.textContent = '玩家' + t + ': ';
+      label.className = 'll-guard-target-label';
+      label.textContent = '玩家' + t;
       row.appendChild(label);
       for (let g = 2; g <= 8; g++) {
         const aid = GUARD_OFF + t * 7 + (g - 2);
@@ -223,21 +239,19 @@ function renderPlayerArea(container, gs, ctx) {
   const area = document.createElement('div');
   area.className = 'll-player-area';
 
-  if (pd.discards && pd.discards.length > 0) {
-    const disc = document.createElement('div');
-    disc.className = 'll-my-discards';
-    const label = document.createElement('span');
-    label.className = 'll-discard-label';
-    label.textContent = '已出: ';
-    disc.appendChild(label);
-    for (const c of pd.discards) {
-      const chip = document.createElement('span');
-      chip.className = 'll-discard-chip mine';
-      chip.textContent = CARD_LABELS[c] + '(' + c + ')';
-      disc.appendChild(chip);
-    }
-    area.appendChild(disc);
+  const disc = document.createElement('div');
+  disc.className = 'll-my-discards';
+  const label = document.createElement('span');
+  label.className = 'll-discard-label';
+  label.textContent = '已出:';
+  disc.appendChild(label);
+  for (const c of (pd.discards || [])) {
+    const chip = document.createElement('span');
+    chip.className = 'll-discard-chip mine card-' + c;
+    chip.textContent = CARD_LABELS[c] + '(' + c + ')';
+    disc.appendChild(chip);
   }
+  area.appendChild(disc);
 
   if (!pd.alive) {
     const dead = document.createElement('div');
@@ -374,7 +388,7 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
       to: toSelector,
       createElement() {
         const el = document.createElement('div');
-        el.className = 'anim-flying-card ll-card-fly';
+        el.className = 'anim-flying-card ll-card-fly card-' + cardValue;
         el.textContent = CARD_VALUES[cardValue];
         return el;
       },

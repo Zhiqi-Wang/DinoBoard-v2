@@ -248,7 +248,7 @@ class TestLoveLetterTrackerKnownHand:
 # ---------------------------------------------------------------------------
 # Cross-game: MCTS search never uses true hidden state directly
 #
-# ISMCTS-v2: hidden-info games route through root sampling (per-sim
+# ISMCTS: hidden-info games route through root sampling (per-sim
 # `randomize_unseen` + per-acting-player DAG keying). The "MCTS doesn't use
 # true hidden state" invariant is verified by TestLoveLetterGuardAccuracy
 # (tests/test_hidden_info_coup_loveletter.py): if MCTS read the true opp

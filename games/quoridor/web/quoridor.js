@@ -241,14 +241,25 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
   if (type === 'move') {
     const oldPawn = (prevState.state.pawns || []).find(p => p.player === actor);
     if (oldPawn) {
+      // Resolve the live pawn size so the flyer is proportional to the
+      // current --slot. If the lookup fails for any reason, fall back to
+      // a reasonable default instead of letting animate.js pick the
+      // (non-square) wrap rect.
+      const livePawn = document.querySelector('[data-pawn="' + actor + '"]');
+      const rect = livePawn ? livePawn.getBoundingClientRect() : null;
+      const size = rect ? Math.round(Math.min(rect.width, rect.height)) : 28;
       steps.push({
         type: 'fly',
         from: '[data-pawn="' + actor + '"]',
         to: '[data-cell="' + actionInfo.row + '-' + actionInfo.col + '"]',
+        width: size,
+        height: size,
         createElement() {
           const el = document.createElement('div');
-          el.className = 'anim-flying-token';
+          el.className = 'anim-flying-token pawn-flying';
           el.style.background = actor === 0 ? '#1f2937' : '#b91c1c';
+          el.style.color = '#fff';
+          el.style.fontWeight = '700';
           el.textContent = actor === 0 ? 'A' : 'B';
           return el;
         },

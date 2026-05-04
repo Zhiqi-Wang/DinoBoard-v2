@@ -307,7 +307,7 @@ py::dict run_selfplay_episode_py(
   }
 
   IBeliefTracker* bt = bundle.belief_tracker.get();
-  // nopeek_enabled is the legacy selfplay peek-disable flag. In ISMCTS-v2
+  // nopeek_enabled is the legacy selfplay peek-disable flag. In ISMCTS
   // the "peek" semantics moves to: when nopeek_enabled is FALSE, skip
   // root-sampling entirely (MCTS sees truth). Peek is useful as a training-
   // early-stage enhancement where value head learns from omniscient rollouts.
@@ -960,7 +960,7 @@ class GameSessionWrapper {
           "GameSession.get_ai_action: no model loaded — create session with model_path");
     }
 
-    // ISMCTS-v2: root-sampling hidden info + DAG per-acting-player keying.
+    // ISMCTS: root-sampling hidden info + DAG per-acting-player keying.
     search::NetMctsConfig mcts_cfg{};
     mcts_cfg.simulations = simulations;
     mcts_cfg.c_puct = 1.4f;

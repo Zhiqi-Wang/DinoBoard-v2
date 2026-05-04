@@ -209,7 +209,7 @@ class TestSplendorBeliefTracker:
 
 
 # ---------------------------------------------------------------------------
-# MCTS hidden-info handling — ISMCTS-v2 routes belief-tracker games through
+# MCTS hidden-info handling — ISMCTS routes belief-tracker games through
 # root sampling; there's no NoPeek / traversal_limiter mechanism. These tests
 # just check that selfplay/arena completes on hidden-info games. The "does
 # MCTS actually hide opponent info" invariant is covered by

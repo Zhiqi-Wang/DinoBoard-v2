@@ -1,4 +1,4 @@
-# MCTS 算法：ISMCTS-v2 实现细节
+# MCTS 算法：ISMCTS 实现细节
 
 本文档面向想理解 DinoBoard 搜索算法的开发者。读完能回答：
 - 一次 `search_root` 从头到尾做了什么
@@ -19,7 +19,7 @@
 
 ## 1. 算法概览
 
-算法叫 **ISMCTS-v2**（Information-Set MCTS 第二版）。核心特性按重要程度排列：
+算法叫 **ISMCTS**（Information-Set MCTS）。核心特性按重要程度排列：
 
 1. **Root 采样**（determinization）：每次 simulation 开头从观察者的 belief 采一个完整世界（包括 opp 手牌 + deck 顺序 + 任何未来随机）。采样后 descent 完全确定性
 2. **Per-acting-player 节点 keying**：每个决策节点用 `state.state_hash_for_perspective(state.current_player())` 作 key——哪位玩家在决策，就用那位玩家的信息集。每个节点真正代表一个合法的 info set

@@ -1,4 +1,4 @@
-# DinoBoard v2
+# DinoBoard
 
 > **Drop a rulebook. Ship a superhuman AI.**
 >
@@ -14,7 +14,7 @@ A general-purpose board-game AI engine — **one framework, one engineering inve
 
 AI in digital board games is usually weak — not because the techniques don't exist, but because **rebuilding AlphaZero from scratch for every title is too costly**. MCTS, ONNX integration, training pipelines, hidden-information handling, tuning traps — every game re-walks the same road.
 
-DinoBoard v2 walks it once and turns the result into **a reusable engine plus a callable API**:
+DinoBoard walks it once and turns the result into **a reusable engine plus a callable API**:
 
 - **~9.4k lines of C++/Python core** — MCTS, belief tracker, training, web, analysis, all generic
 - **~2000 lines to add a new game** — rules + feature encoder + JSON config; the framework owns the rest
@@ -29,7 +29,7 @@ DinoBoard v2 walks it once and turns the result into **a reusable engine plus a 
 
 ## Why it is technically strong
 
-### ISMCTS-v2: chance-node-free DAG search
+### ISMCTS: chance-node-free DAG search
 
 A ground-up MCTS redesign for hidden-information games. **Root-sampling determinization + per-acting-player info-set keying + UCT2** — each simulation samples a full world from the belief, descent is fully deterministic afterward, and the same info set reached along different paths shares a DAG node. No NoPeek / traversal limiter / chance-outcome machinery required. See [docs/MCTS_ALGORITHM.md](docs/MCTS_ALGORITHM.md).
 
@@ -200,7 +200,7 @@ Features: 6 games, three difficulty tiers (Heuristic / Casual / Expert), seat se
 ## Core concepts
 
 - **GameBundle registration** — each game exposes a factory that returns state + rules + encoder + optional components. See the [game development guide](docs/GAME_DEVELOPMENT_GUIDE.md).
-- **ISMCTS-v2** — root sampling + DAG + UCT2. A native design for hidden-info games, no chance-node machinery needed. See [docs/MCTS_ALGORITHM.md](docs/MCTS_ALGORITHM.md).
+- **ISMCTS** — root sampling + DAG + UCT2. A native design for hidden-info games, no chance-node machinery needed. See [docs/MCTS_ALGORITHM.md](docs/MCTS_ALGORITHM.md).
 - **AI API** — observation-only REST interface that third-party apps consume directly, without embedding engine code. Doubles as an information-theoretic proof that the AI never cheats. See [game development guide § 17](docs/GAME_DEVELOPMENT_GUIDE.md).
 - **Training pipeline** — self-play → replay buffer → SGD → ONNX export → gating eval (≥60% win rate updates `best`). Includes warm start, heuristic guidance, auxiliary score, training action filter, MCTS schedule.
 
@@ -210,7 +210,7 @@ Features: 6 games, three difficulty tiers (Heuristic / Casual / Expert), seat se
 
 - **[Features overview](docs/GAME_FEATURES_OVERVIEW.md)** — what the framework can do
 - **[Game development guide](docs/GAME_DEVELOPMENT_GUIDE.md)** — single source of truth for adding a new game
-- **[MCTS algorithm](docs/MCTS_ALGORITHM.md)** — the ISMCTS-v2 DAG-search derivation
+- **[MCTS algorithm](docs/MCTS_ALGORITHM.md)** — the ISMCTS DAG-search derivation
 - **[New game test guide](docs/NEW_GAME_TEST_GUIDE.md)** — 9-step acceptance workflow
 - **[Known issues & trade-offs](docs/KNOWN_ISSUES.md)** — BUG-001 through BUG-022 postmortems plus design decisions
 
@@ -230,7 +230,7 @@ open an Issue or Discussion.
 ## Directory layout
 
 ```
-DinoBoard-v2/
+DinoBoard/
 ├── engine/                         # C++ general engine
 │   ├── core/                       # Interface definitions
 │   │   ├── game_interfaces.h       #   IGameState, IGameRules, IStateValueModel

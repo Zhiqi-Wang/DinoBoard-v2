@@ -1,6 +1,6 @@
 # 已知问题与踩坑汇总
 
-> 记录 DinoBoard-v2 开发过程中发现并修复的 bug，以及需要注意的设计取舍。
+> 记录 DinoBoard 开发过程中发现并修复的 bug，以及需要注意的设计取舍。
 > 目的：避免未来开发者重复踩坑。
 
 根据受众不同分为两大类：
@@ -37,12 +37,12 @@
 - [BUG-022] cancel_pipeline 误清 precompute，导致 expert 第一手 AI 响应多 8 秒
 - [BUG-024] GameSession MCTS 搜索在真实状态上跑，应隔离为 AI view
 - [BUG-025] pipeline.py `nopeek_enabled` off-by-one：peek_steps=0 被错误解读为"第 0 步 peek"
-- [BUG-026] ISMCTS-v2 DAG hash collision → MCTS 选中非法 action 崩溃
+- [BUG-026] ISMCTS DAG hash collision → MCTS 选中非法 action 崩溃
 
 ### 游戏层 Issues（具体游戏的规则 / 编码器 / tracker）
 
 - [BUG-017] SplendorBeliefTracker 偷看牌堆内容（Splendor）
-- [BUG-023] Love Letter AI 永远猜对 Guard — terminal-by-elimination 漏过 NoPeek 检测（Love Letter，**已被 ISMCTS-v2 重构整体解决**）
+- [BUG-023] Love Letter AI 永远猜对 Guard — terminal-by-elimination 漏过 NoPeek 检测（Love Letter，**已被 ISMCTS 重构整体解决**）
 
 ---
 
@@ -998,8 +998,8 @@ std::vector<std::unique_ptr<OnnxPolicyValueEvaluator>> ai_evaluators_;
 
 ## [BUG-023] Love Letter AI 永远猜对 Guard — terminal-by-elimination 漏过 NoPeek 检测
 
-**分类**：游戏层（Love Letter）— 只在 ISMCTS-v1 / NoPeek 架构下成立，**ISMCTS-v2 重构后不再可能**（root 采样不依赖 rng_nonce 触发）。保留作为"游戏规则中隐藏-信息-依赖动作要触发随机化"的历史教训
-**状态**：已修复（后被 ISMCTS-v2 整体架构替代）
+**分类**：游戏层（Love Letter）— 只在旧的 NoPeek 架构下成立，**ISMCTS 重构后不再可能**（root 采样不依赖 rng_nonce 触发）。保留作为"游戏规则中隐藏-信息-依赖动作要触发随机化"的历史教训
+**状态**：已修复（后被 ISMCTS 整体架构替代）
 **文件**：`games/loveletter/loveletter_rules.cpp`
 **严重程度**：严重 — AI 对隐藏信息游戏直接读取真实状态决策，相当于作弊
 
@@ -1047,7 +1047,7 @@ std::vector<std::unique_ptr<OnnxPolicyValueEvaluator>> ai_evaluators_;
 **分类**：框架层
 **状态**：已修复
 **文件**：`training/pipeline.py:439`
-**严重程度**：高 — peek 模式在 ISMCTS-v2 下让 MCTS 在 truth 上搜索，破坏 DAG hash 的 info-set 语义；训练第一步直接崩
+**严重程度**：高 — peek 模式在 ISMCTS 下让 MCTS 在 truth 上搜索，破坏 DAG hash 的 info-set 语义；训练第一步直接崩
 
 ### 问题描述
 
@@ -1079,7 +1079,7 @@ off-by-one：`step > N` 表达的是 "step 不在前 N+1 个里面"，但 "前 N
 
 ---
 
-## [BUG-026] ISMCTS-v2 DAG hash collision → MCTS 选中非法 action 崩溃
+## [BUG-026] ISMCTS DAG hash collision → MCTS 选中非法 action 崩溃
 
 **分类**：框架层
 **状态**：已兜底修复（真正的 Hasher 强化是未来工作）
@@ -1088,7 +1088,7 @@ off-by-one：`step > N` 表达的是 "step 不在前 N+1 个里面"，但 "前 N
 
 ### 问题描述
 
-ISMCTS-v2 用 DAG 节点共享：同一 `state_hash_for_perspective(current_player)` 的 sims 复用同一节点的 edges（UCB 统计在该节点聚合）。训练中偶尔报：
+ISMCTS 用 DAG 节点共享：同一 `state_hash_for_perspective(current_player)` 的 sims 复用同一节点的 edges（UCB 统计在该节点聚合）。训练中偶尔报：
 
 ```
 MCTS: selected action failed validate_action — node/state inconsistency
@@ -1145,7 +1145,7 @@ if (!rules.validate_action(*sim_state, chosen_action)) {
 
 ### 教训
 
-- **DAG + hash 共享节点的搜索**永远要在 edge 传播前 validate，不能假设"hash 相同 → state 行为相同"。这是 ISMCTS-v2 设计的 invariant **要**然成立但**不能**假设 100% 无碰撞
+- **DAG + hash 共享节点的搜索**永远要在 edge 传播前 validate，不能假设"hash 相同 → state 行为相同"。这是 ISMCTS 设计的 invariant **要**然成立但**不能**假设 100% 无碰撞
 - 隐藏信息游戏 + Dirichlet 噪声是最容易暴露 hash collision 的组合，因为噪声扩大了搜索分支、不同 sim 走到同 info-set 的机会增多
 - 诊断要早一点写——第一次挂的时候信息几乎为零（`node/state inconsistency`），加 dump 之后立刻看明白是 edge set vs legal set 不匹配
 

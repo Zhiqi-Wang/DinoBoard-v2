@@ -1,259 +1,385 @@
+/* Love Letter — aligned with platform light aesthetic (cf. Azul).
+ *
+ * Space-anchoring (per WEB_DESIGN_PRINCIPLES §2):
+ *   - Opponent slots: fixed width, always rendered (eliminated still
+ *     occupies space as a ghost slot). Discard row has min-height so
+ *     the slot doesn't grow when the opponent starts discarding.
+ *   - Player hand: fixed min-height two-card row. Single-card rounds
+ *     keep the row height so the hint text below stays anchored.
+ */
+
 .ll-board {
+  width: min(880px, 100%);
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 16px;
-  min-height: 280px;
+  gap: 14px;
+  padding: 14px 16px 16px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid #c6d7e3;
+  border-radius: 12px;
 }
 
 .ll-deck-info {
-  font-size: 14px;
-  color: #b0b8c8;
+  font-size: 13px;
+  color: #0f3554;
   text-align: center;
-  padding: 8px;
-  background: #1a1a2e;
+  padding: 8px 12px;
+  background: #eef5fa;
+  border: 1px solid #9db9cc;
   border-radius: 8px;
+  font-weight: 600;
 }
 
 .ll-opponents {
   display: flex;
-  gap: 12px;
+  gap: 14px;
   justify-content: center;
   flex-wrap: wrap;
 }
 
+/* Fixed-size opponent slot. Stays put whether alive, eliminated, or
+ * protected; only inner styling changes. Prevents layout shift when an
+ * opponent gets eliminated mid-round. */
 .ll-opponent {
-  background: #1e1e3a;
-  border: 2px solid #333;
+  width: 180px;
+  min-height: 130px;
+  background: linear-gradient(180deg, #f8f2e8 0, #f1e8da 100%);
+  border: 2px solid #8aa9bf;
   border-radius: 12px;
-  padding: 12px 16px;
-  min-width: 120px;
+  padding: 10px 12px;
   text-align: center;
   transition: border-color 0.2s, box-shadow 0.2s;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
 }
 
 .ll-opponent.eliminated {
-  opacity: 0.4;
-  border-color: #555;
+  opacity: 0.45;
+  border-color: #94a3b8;
+  background: #e2e8f0;
 }
 
 .ll-opponent.protected {
-  border-color: #4a9;
-  box-shadow: 0 0 8px rgba(68, 170, 153, 0.3);
+  border-color: #0d9488;
+  box-shadow: 0 0 0 2px rgba(13, 148, 136, 0.25);
 }
 
 .ll-opponent.current-turn {
-  border-color: #e8a;
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.35);
 }
 
 .ll-opponent.selectable {
   cursor: pointer;
-  border-color: #fa0;
-  animation: pulse-border 1s ease-in-out infinite;
+  border-color: #f59e0b;
+  animation: ll-pulse-border 1.2s ease-in-out infinite;
 }
 
 .ll-opponent.selectable:hover {
-  box-shadow: 0 0 12px rgba(255, 170, 0, 0.5);
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.45);
 }
 
 .ll-opponent.selected-target {
-  border-color: #f80;
-  background: #2a2a4a;
+  border-color: #d97706;
+  background: #fef3c7;
 }
 
-@keyframes pulse-border {
-  0%, 100% { box-shadow: 0 0 4px rgba(255, 170, 0, 0.3); }
-  50% { box-shadow: 0 0 12px rgba(255, 170, 0, 0.6); }
+@keyframes ll-pulse-border {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.25); }
+  50% { box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.55); }
 }
 
 .ll-opp-name {
-  font-weight: bold;
-  margin-bottom: 6px;
-  color: #ccc;
+  font-weight: 700;
+  color: #0f172a;
+  font-size: 14px;
 }
+
+.ll-opp-status {
+  font-size: 11px;
+  font-weight: 700;
+  color: #64748b;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ll-opp-status.status-protected { color: #0d9488; }
+.ll-opp-status.status-eliminated { color: #b91c1c; }
+.ll-opp-status.status-turn { color: #0284c7; }
 
 .ll-opp-discards {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
   justify-content: center;
-  margin-top: 6px;
+  margin-top: auto;
+  min-height: 24px;
 }
 
 .ll-discard-chip {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 22px;
+  padding: 0 6px;
   font-size: 12px;
-  padding: 2px 8px;
-  background: #2a2a4a;
-  border-radius: 4px;
-  color: #c0c8d8;
+  font-weight: 700;
+  border-radius: 999px;
+  color: #f8fafc;
+  background: #475569;
+  border: 1px solid rgba(15, 23, 42, 0.25);
 }
+
+/* Card-color accents on discard chips so it's easy to scan which cards
+ * have been played. Matches the hand-card left-stripe colors. */
+.ll-discard-chip.card-1 { background: #3b82f6; }
+.ll-discard-chip.card-2 { background: #22c55e; color: #052e16; }
+.ll-discard-chip.card-3 { background: #f59e0b; color: #1e1a00; }
+.ll-discard-chip.card-4 { background: #8b5cf6; }
+.ll-discard-chip.card-5 { background: #06b6d4; color: #052830; }
+.ll-discard-chip.card-6 { background: #eab308; color: #1c1400; }
+.ll-discard-chip.card-7 { background: #ec4899; }
+.ll-discard-chip.card-8 { background: #ef4444; }
 
 .ll-discard-chip.mine {
-  background: #2a3a4a;
-  color: #8bf;
+  border-color: #0284c7;
+  box-shadow: 0 0 0 1px #0ea5e9;
 }
 
+/* Guard guess panel — one row per valid target, row contains value
+ * buttons 2..8. Fixed min-height so appearance/disappearance doesn't
+ * yank the hand below. */
 .ll-guard-panel {
-  background: #1a1a2e;
-  border: 1px solid #444;
-  border-radius: 8px;
-  padding: 12px;
-  min-height: 60px;
+  background: #eef5fa;
+  border: 1px solid #9db9cc;
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ll-guard-panel-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f3554;
 }
 
 .ll-guard-target-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
   flex-wrap: wrap;
 }
 
-.ll-guard-target-row span {
-  color: #bbb;
-  font-size: 14px;
-  min-width: 60px;
+.ll-guard-target-label {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+  min-width: 64px;
 }
 
 .ll-guess-btn {
-  background: #2a2a4a;
-  color: #ddd;
-  border: 1px solid #555;
+  background: #fff;
+  color: #0f172a;
+  border: 1px solid #94a3b8;
   border-radius: 8px;
-  padding: 8px 14px;
-  font-size: 14px;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
-  min-height: 36px;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+  min-height: 32px;
 }
 
 .ll-guess-btn:hover {
-  background: #3a3a5a;
-  border-color: #fa0;
-  color: #fff;
+  background: #fef3c7;
+  border-color: #f59e0b;
+  transform: translateY(-1px);
 }
 
-/* Player hand area */
+/* Player hand area (below the stage, rendered by renderPlayerArea). */
 .ll-player-area {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  padding: 16px;
-}
-
-.ll-hand {
-  display: flex;
-  gap: 16px;
-  justify-content: center;
-}
-
-.ll-card {
-  width: 120px;
-  min-height: 170px;
-  background: #1e1e3a;
-  border: 2px solid #444;
+  padding: 14px 16px;
+  background: linear-gradient(180deg, #f8f2e8 0, #f1e8da 100%);
+  border: 2px solid #8aa9bf;
   border-radius: 12px;
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  cursor: default;
-  transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
-  position: relative;
-}
-
-.ll-card.playable {
-  cursor: pointer;
-  border-color: #668;
-}
-
-.ll-card.playable:hover {
-  border-color: #88a;
-  transform: translateY(-4px);
-  box-shadow: 0 4px 16px rgba(100, 100, 200, 0.3);
-}
-
-.ll-card.selected {
-  border-color: #fa0;
-  box-shadow: 0 0 16px rgba(255, 170, 0, 0.4);
-  transform: translateY(-6px);
-}
-
-.ll-card:disabled {
-  opacity: 0.5;
-}
-
-.ll-card-value {
-  font-size: 28px;
-  font-weight: bold;
-  color: #e8c860;
-}
-
-.ll-card-name {
-  font-size: 16px;
-  font-weight: bold;
-  color: #ddd;
-}
-
-.ll-card-effect {
-  font-size: 13px;
-  color: #c0c0d0;
-  text-align: center;
-  line-height: 1.4;
-}
-
-/* Card color accents — stronger gradients + left stripe */
-.ll-card.card-1 { background: linear-gradient(135deg, #1a3555 0%, #1e1e3a 55%); border-left: 3px solid #3b82f6; }
-.ll-card.card-2 { background: linear-gradient(135deg, #1a4535 0%, #1e1e3a 55%); border-left: 3px solid #22c55e; }
-.ll-card.card-3 { background: linear-gradient(135deg, #453520 0%, #1e1e3a 55%); border-left: 3px solid #f59e0b; }
-.ll-card.card-4 { background: linear-gradient(135deg, #2e1a45 0%, #1e1e3a 55%); border-left: 3px solid #8b5cf6; }
-.ll-card.card-5 { background: linear-gradient(135deg, #1a4545 0%, #1e1e3a 55%); border-left: 3px solid #06b6d4; }
-.ll-card.card-6 { background: linear-gradient(135deg, #45451a 0%, #1e1e3a 55%); border-left: 3px solid #eab308; }
-.ll-card.card-7 { background: linear-gradient(135deg, #451a30 0%, #1e1e3a 55%); border-left: 3px solid #ec4899; }
-.ll-card.card-8 { background: linear-gradient(135deg, #551a1a 0%, #2e1e1e 55%); border-left: 3px solid #ef4444; }
-
-.ll-pending-hint {
-  color: #fa0;
-  font-size: 14px;
-  text-align: center;
-  animation: fade-hint 1.5s ease-in-out infinite;
-}
-
-@keyframes fade-hint {
-  0%, 100% { opacity: 0.6; }
-  50% { opacity: 1; }
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
 }
 
 .ll-my-discards {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   flex-wrap: wrap;
+  min-height: 28px;
+  justify-content: center;
 }
 
 .ll-discard-label {
-  color: #999;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* Fixed min-height so the hand row doesn't collapse between draw and
+ * play (1 vs 2 cards). */
+.ll-hand {
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+  align-items: flex-start;
+  min-height: 180px;
+}
+
+.ll-card {
+  width: 120px;
+  min-height: 170px;
+  background: #fffef8;
+  border: 2px solid #94a3b8;
+  border-radius: 12px;
+  padding: 12px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  cursor: default;
+  transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
+  position: relative;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.1);
+}
+
+.ll-card.playable {
+  cursor: pointer;
+  border-color: #0ea5e9;
+}
+
+.ll-card.playable:hover {
+  border-color: #0284c7;
+  transform: translateY(-6px);
+  box-shadow: 0 8px 20px rgba(14, 165, 233, 0.25);
+}
+
+.ll-card.selected {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.4), 0 8px 20px rgba(245, 158, 11, 0.3);
+  transform: translateY(-8px);
+}
+
+.ll-card:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.ll-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  width: 100%;
+}
+
+.ll-card-value {
+  font-size: 30px;
+  font-weight: 800;
+  color: #0f172a;
+  line-height: 1;
+}
+
+.ll-card-suit {
+  font-size: 18px;
+  opacity: 0.8;
+}
+
+.ll-card-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+  text-align: center;
+}
+
+.ll-card-effect {
+  font-size: 12px;
+  color: #475569;
+  text-align: center;
+  line-height: 1.35;
+  margin-top: auto;
+}
+
+/* Left-stripe + soft tint so cards are identifiable at a glance. Keep
+ * the card background light so text stays legible. */
+.ll-card.card-1 { border-left: 6px solid #3b82f6; background: linear-gradient(135deg, #e0ecff 0%, #fffef8 55%); }
+.ll-card.card-2 { border-left: 6px solid #22c55e; background: linear-gradient(135deg, #dcfce7 0%, #fffef8 55%); }
+.ll-card.card-3 { border-left: 6px solid #f59e0b; background: linear-gradient(135deg, #fef3c7 0%, #fffef8 55%); }
+.ll-card.card-4 { border-left: 6px solid #8b5cf6; background: linear-gradient(135deg, #ede9fe 0%, #fffef8 55%); }
+.ll-card.card-5 { border-left: 6px solid #06b6d4; background: linear-gradient(135deg, #cffafe 0%, #fffef8 55%); }
+.ll-card.card-6 { border-left: 6px solid #eab308; background: linear-gradient(135deg, #fef9c3 0%, #fffef8 55%); }
+.ll-card.card-7 { border-left: 6px solid #ec4899; background: linear-gradient(135deg, #fce7f3 0%, #fffef8 55%); }
+.ll-card.card-8 { border-left: 6px solid #ef4444; background: linear-gradient(135deg, #fee2e2 0%, #fffef8 55%); }
+
+.ll-pending-hint {
+  color: #b45309;
   font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+  animation: ll-fade-hint 1.5s ease-in-out infinite;
+  background: #fef3c7;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid #f59e0b;
+}
+
+@keyframes ll-fade-hint {
+  0%, 100% { opacity: 0.75; }
+  50% { opacity: 1; }
 }
 
 .ll-dead-msg {
-  color: #f55;
+  color: #b91c1c;
   font-size: 18px;
-  font-weight: bold;
+  font-weight: 800;
   text-align: center;
-  padding: 20px;
+  padding: 18px 24px;
+  background: #fee2e2;
+  border: 2px solid #b91c1c;
+  border-radius: 10px;
 }
 
-/* Flying card colors (animation) */
+/* Flying card (animation). Sized to roughly the hand card footprint
+ * without the padding/effect so the flight sprite reads as a card
+ * traveling. */
 .anim-flying-card.ll-card-fly {
-  background: #2a2a4a;
-  border: 2px solid #888;
+  width: 84px;
+  height: 118px;
+  background: #fffef8;
+  border: 2px solid #94a3b8;
   border-radius: 8px;
-  padding: 4px 8px;
-  color: #e8c860;
-  font-weight: bold;
-  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  font-weight: 800;
+  color: #0f172a;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+
+.anim-flying-card.ll-card-fly.card-1 { border-left: 5px solid #3b82f6; }
+.anim-flying-card.ll-card-fly.card-2 { border-left: 5px solid #22c55e; }
+.anim-flying-card.ll-card-fly.card-3 { border-left: 5px solid #f59e0b; }
+.anim-flying-card.ll-card-fly.card-4 { border-left: 5px solid #8b5cf6; }
+.anim-flying-card.ll-card-fly.card-5 { border-left: 5px solid #06b6d4; }
+.anim-flying-card.ll-card-fly.card-6 { border-left: 5px solid #eab308; }
+.anim-flying-card.ll-card-fly.card-7 { border-left: 5px solid #ec4899; }
+.anim-flying-card.ll-card-fly.card-8 { border-left: 5px solid #ef4444; }
+
+@media (max-width: 900px) {
+  .ll-opponent { width: 150px; }
+  .ll-card { width: 100px; min-height: 150px; }
+  .ll-hand { min-height: 160px; }
 }

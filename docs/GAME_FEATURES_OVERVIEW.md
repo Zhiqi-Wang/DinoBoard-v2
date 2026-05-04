@@ -1,4 +1,4 @@
-# DinoBoard v2 — 功能概览
+# DinoBoard — 功能概览
 
 给游戏开发者的快速参考。详细实现请看 [GAME_DEVELOPMENT_GUIDE.md](GAME_DEVELOPMENT_GUIDE.md)。
 
@@ -23,7 +23,7 @@
 
 AI 由两个核心模块协作组成：**MCTS + 双头神经网络**（policy/value）负责搜索与评估，**Belief Tracker** 负责维护当前玩家的信息认知。搜索时，belief tracker 提供"我知道什么"，MCTS 在此基础上构造可能世界并搜索最优动作。整条 AI 链路只依赖观察历史和 belief，不读取游戏的真实隐藏状态——这使得同一套 AI 既能用于 selfplay 训练，也能对接外部游戏服务器（AI 只接收"谁打了什么"的观察序列）。
 
-### MCTS（ISMCTS-v2）
+### MCTS（ISMCTS）
 
 神经网络引导的 Monte Carlo Tree Search，原生支持 N 人游戏（2-4 人）。**算法详解见 [MCTS_ALGORITHM.md](MCTS_ALGORITHM.md)**。此处只列要点：
 
@@ -44,7 +44,7 @@ MCTS 前用 alpha-beta 尝试精确求解，证明必赢则跳过 MCTS。使用 
 
 ### 随机性与隐藏信息
 
-物理随机和信息不对称在 ISMCTS-v2 里被**统一处理**，不需要为两者分别设计机制。核心机制：
+物理随机和信息不对称在 ISMCTS 里被**统一处理**，不需要为两者分别设计机制。核心机制：
 
 1. **Root 采样吞掉所有未来随机**。每次 sim 开头 `belief_tracker->randomize_unseen(sim_state, rng)` 把 opp 手牌 + 未来抽牌 + 任何不确定字段一次性采样成具体值。之后 descent 完全确定
 2. **观察者可见的后果自然通过 hash 分叉**。Splendor tier 翻新卡（公开）→ 不同 sim 不同 tableau → 不同 `hash_public_fields` → 不同决策节点（DAG 里自然分化）

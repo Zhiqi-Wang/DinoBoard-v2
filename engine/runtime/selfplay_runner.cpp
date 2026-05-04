@@ -190,7 +190,7 @@ SelfplayEpisodeResult run_selfplay_episode(
     mcts_cfg.value_clip = config.value_clip;
     mcts_cfg.root_dirichlet_alpha = noise.alpha;
     mcts_cfg.root_dirichlet_epsilon = noise.epsilon;
-    // ISMCTS-v2: root-sampling hidden info + DAG per-acting-player keying.
+    // ISMCTS: root-sampling hidden info + DAG per-acting-player keying.
     // MCTS uses the per-sim sampled world's rules.legal_actions at each node.
     if (belief_tracker) {
       mcts_cfg.root_belief_tracker = belief_tracker;

@@ -1,6 +1,6 @@
 """Regression: feature encoder respects the public/private partition.
 
-The ISMCTS-v2 architecture aligns encoder scope with the hash scope:
+The ISMCTS architecture aligns encoder scope with the hash scope:
 encoder must only extract features from (public_fields + current
 player's private_fields). Opponents' private fields must NOT influence
 encoder output.

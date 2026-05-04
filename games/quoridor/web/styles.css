@@ -5,8 +5,14 @@
 }
 
 .quoridor-board-grid {
-  --slot: min(28px, calc((100vh - 120px) / 17), calc((100vw - 360px - 280px) / 17));
-  padding: 12px;
+  /* 17 = 9 cells + 8 wall slots. Target ~42px cells → 17*28 + wall slots
+   * ≈ 476px grid. Cell = 3 slots wide in the `.board-cell` sense, so the
+   * effective "cell" (what the user perceives) is 3*slot ≈ 84px at the
+   * 28px figure. Previous 28px cap made the board feel cramped — bump
+   * the default to 34px and the viewport-bounded fallback widens along
+   * with it. */
+  --slot: min(34px, calc((100vh - 120px) / 17), calc((100vw - 360px - 280px) / 17));
+  padding: 14px;
   border: 1px solid #d1d5db;
   border-radius: 10px;
   background: #ffffff;
@@ -58,8 +64,11 @@
 }
 
 .pawn {
-  width: 26px;
-  height: 26px;
+  /* Scale with --slot so the pawn stays proportional when the board
+   * resizes. ~85% of the cell width keeps a visible rim of the cell
+   * background around the piece. */
+  width: calc(var(--slot) * 0.82);
+  height: calc(var(--slot) * 0.82);
   border-radius: 999px;
   display: flex;
   align-items: center;
@@ -69,6 +78,17 @@
   font-weight: 700;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
   z-index: 5;
+}
+
+/* Quoridor-specific flying pawn: force circular shape. Without this the
+ * animate.js flyer inherits the default `.anim-flying-token` rule but
+ * gets overridden by inline width/height from fromRect — the 50%
+ * border-radius still makes a circle on square boxes, but if fromRect
+ * is non-square (rare but possible under box-sizing changes) the sprite
+ * looked rectangular. Pin to a forced aspect here. */
+.anim-flying-token.pawn-flying {
+  border-radius: 999px !important;
+  aspect-ratio: 1 / 1;
 }
 
 .pawn.p0 { background: #1f2937; }

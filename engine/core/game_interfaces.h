@@ -48,7 +48,7 @@ class IGameState {
   // transposition debug). New code paths use state_hash_for_perspective.
   virtual StateHash64 state_hash(bool include_hidden_rng) const = 0;
 
-  // ========== New public/private hash API (ISMCTS-v2) ==========
+  // ========== Public/private hash API ==========
   //
   // Game declares which fields are public and which are private per-player.
   // Framework derives state_hash_for_perspective(p) by combining:
@@ -105,7 +105,7 @@ class IGameState {
  protected:
   // Counter for DAG acyclicity. Framework-managed. Reset to 0 in
   // reset_with_seed implementations; bumped by begin_step; rolled back by
-  // end_step. See docs/plans/ISMCTS_REFACTOR_PLAN.md §Cycle 防护.
+  // end_step.
   std::uint32_t step_count_ = 0;
 };
 

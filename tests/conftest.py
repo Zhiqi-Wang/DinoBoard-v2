@@ -1,4 +1,4 @@
-"""Shared fixtures and helpers for DinoBoard-v2 tests."""
+"""Shared fixtures and helpers for DinoBoard tests."""
 import json
 from pathlib import Path
 

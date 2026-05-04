@@ -9,7 +9,7 @@
 
 namespace board_ai::search {
 
-// ISMCTS-v2 MCTS config. The hidden-info machinery is driven entirely by
+// ISMCTS MCTS config. The hidden-info machinery is driven entirely by
 // root_belief_tracker:
 //   - If non-null, each simulation clones the root state and calls
 //     `tracker->randomize_unseen(*sim_state, rng)` once at sim start, to

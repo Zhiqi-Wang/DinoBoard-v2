@@ -74,8 +74,8 @@ class TestCoupHiddenInfo:
         assert ep1["total_plies"] == ep2["total_plies"]
         assert ep1["winner"] == ep2["winner"]
 
-    def test_selfplay_runs_under_ismcts_v2(self):
-        # ISMCTS-v2: root sampling + DAG. Info-leak invariance is separately
+    def test_selfplay_runs_under_ismcts(self):
+        # ISMCTS: root sampling + DAG. Info-leak invariance is separately
         # covered by the API belief-match tests.
         ep = dinoboard_engine.run_selfplay_episode(
             game_id="coup", seed=42, model_path=get_test_model("coup"),
@@ -241,8 +241,8 @@ class TestLoveLetterHiddenInfo:
         assert ep1["total_plies"] == ep2["total_plies"]
         assert ep1["winner"] == ep2["winner"]
 
-    def test_selfplay_runs_under_ismcts_v2(self):
-        # ISMCTS-v2: no NoPeek / afterstate cap. traversal_stops always 0.
+    def test_selfplay_runs_under_ismcts(self):
+        # ISMCTS: no NoPeek / afterstate cap. traversal_stops always 0.
         # Info-leak invariance separately covered by test_api_mcts_policy_invariance
         # and TestLoveLetterGuardAccuracy.
         ep = dinoboard_engine.run_selfplay_episode(
@@ -433,7 +433,7 @@ class TestGameSessionTailSolve:
         assert result["stats"]["tail_solved"] is False
 
     def test_stats_include_dag_reuse_hits(self):
-        # Hidden-info games under ISMCTS-v2 should exercise DAG node reuse.
+        # Hidden-info games under ISMCTS should exercise DAG node reuse.
         gs = dinoboard_engine.GameSession(
             "loveletter", seed=42, model_path=get_test_model("loveletter"))
         result = gs.get_ai_action(simulations=20, temperature=0.0)
