@@ -3,7 +3,7 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -30,6 +30,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Dev mode: disable browser caching for all responses so CSS / JS / HTML
+# changes show up on a normal refresh. Without this, browsers hang on to
+# stale static files across edits and users have to Cmd+Shift+R after
+# every tweak. Switch this off (or make it conditional on an env var) if
+# you ever deploy this to actual production.
+@app.middleware("http")
+async def no_cache(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 app.include_router(game_router)
 app.include_router(replay_router)

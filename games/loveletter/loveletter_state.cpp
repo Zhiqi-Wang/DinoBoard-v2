@@ -29,6 +29,7 @@ LoveLetterState<NPlayers>::LoveLetterState() {
 
 template <int NPlayers>
 void LoveLetterState<NPlayers>::reset_with_seed(std::uint64_t seed) {
+  this->step_count_ = 0;
   rng_salt = sanitize_seed(seed);
   auto& d = data;
   d.draw_nonce = sanitize_seed(seed);
@@ -117,6 +118,41 @@ StateHash64 LoveLetterState<NPlayers>::state_hash(bool include_hidden_rng) const
 }
 
 template <int NPlayers>
+void LoveLetterState<NPlayers>::hash_public_fields(Hasher& h) const {
+  // Public info in Love Letter: everything except any player's hand,
+  // current_player's drawn_card, set_aside_card, and deck contents.
+  const auto& d = data;
+  h.add(d.current_player + 3);
+  h.add(d.first_player + 5);
+  h.add(d.ply + 7);
+  h.add(d.winner + 11);
+  h.add(d.terminal ? 1 : 0);
+
+  for (int p = 0; p < Cfg::kPlayers; ++p) {
+    h.add(d.alive[p] + 13);
+    h.add(d.protected_flags[p] + 17);
+    h.add(d.hand_exposed[p] + 53);
+    for (auto c : d.discard_piles[static_cast<size_t>(p)]) h.add(c + 23);
+    h.add(d.discard_piles[static_cast<size_t>(p)].size() + 29);
+  }
+  h.add(d.deck.size() + 37);
+  for (auto c : d.face_up_removed) h.add(c + 47);
+}
+
+template <int NPlayers>
+void LoveLetterState<NPlayers>::hash_private_fields(int player, Hasher& h) const {
+  // Private info for player p: their hand card, plus their drawn_card
+  // if p is the current_player (only current_player has a drawn card).
+  const auto& d = data;
+  if (player >= 0 && player < Cfg::kPlayers) {
+    h.add(d.hand[player] + 19);
+    if (d.current_player == player && d.drawn_card != 0) {
+      h.add(d.drawn_card + 31);
+    }
+  }
+}
+
+template <int NPlayers>
 int LoveLetterState<NPlayers>::current_player() const {
   return data.current_player;
 }
@@ -134,11 +170,6 @@ bool LoveLetterState<NPlayers>::is_terminal() const {
 template <int NPlayers>
 int LoveLetterState<NPlayers>::winner() const {
   return data.winner;
-}
-
-template <int NPlayers>
-std::uint64_t LoveLetterState<NPlayers>::rng_nonce() const {
-  return data.draw_nonce;
 }
 
 template struct LoveLetterData<2>;

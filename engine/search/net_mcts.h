@@ -3,13 +3,25 @@
 #include <cstdint>
 #include <vector>
 
+#include "../core/belief_tracker.h"
 #include "../core/game_interfaces.h"
 #include "tail_solver.h"
 
 namespace board_ai::search {
 
-class INetMctsTraversalLimiter;
-
+// ISMCTS-v2 MCTS config. The hidden-info machinery is driven entirely by
+// root_belief_tracker:
+//   - If non-null, each simulation clones the root state and calls
+//     `tracker->randomize_unseen(*sim_state, rng)` once at sim start, to
+//     sample a belief-consistent hidden world. After sampling, descent is
+//     fully deterministic within that world.
+//   - Tree nodes are keyed by `state.state_hash_for_perspective(current_player)`,
+//     which combines public fields + acting player's private fields +
+//     step_count (DAG acyclicity). Different paths that reach the same
+//     (public, acting-player-private, step_count) triple share a node via
+//     a global hash→node_index table — the tree is a DAG, not a pure tree.
+//   - No chance node machinery (NoPeek / afterstate cap / stochastic
+//     detector): physical randomness resolves at root-sampling time.
 struct NetMctsConfig {
   int simulations = 200;
   float c_puct = 1.4f;
@@ -17,7 +29,11 @@ struct NetMctsConfig {
   float value_clip = 1.0f;
   float root_dirichlet_alpha = 0.0f;
   float root_dirichlet_epsilon = 0.0f;
-  INetMctsTraversalLimiter* traversal_limiter = nullptr;
+
+  // Enables ISMCTS root-sampling. When non-null, each simulation clones
+  // root and calls tracker->randomize_unseen(sim_state, rng) before descent.
+  // When null, search runs on root directly (fully-public games or peek mode).
+  const IBeliefTracker* root_belief_tracker = nullptr;
 
   bool tail_solve_enabled = false;
   TailSolveConfig tail_solve_config{};
@@ -34,12 +50,15 @@ struct NetMctsStats {
   std::vector<ActionId> root_actions{};
   std::vector<int> root_action_visits{};
   bool tail_solve_attempted = false;
-  bool tail_solve_completed = false;  // budget not exceeded; search finished
-  bool tail_solved = false;            // proven win only (paranoid-safe for multiplayer)
+  bool tail_solve_completed = false;
+  bool tail_solved = false;
   TailSolveOutcome tail_solve_outcome = TailSolveOutcome::kUnknown;
   float tail_solve_value = 0.0f;
   double tail_solve_elapsed_ms = 0.0;
-  int traversal_stops = 0;
+  // DAG-specific stats: number of times a descend hit an existing hash→node
+  // and reused it instead of creating. Useful for observing how much DAG
+  // sharing saves relative to the total descent steps.
+  std::int64_t dag_reuse_hits = 0;
 };
 
 ActionId select_action_from_visits(
@@ -58,69 +77,6 @@ class IPolicyValueEvaluator {
       const std::vector<ActionId>& legal_actions,
       std::vector<float>* priors,
       std::vector<float>* values) const = 0;
-};
-
-enum class TraversalStopAction {
-  kFallbackToDefaultLeaf = 0,
-  kUseLeafValue = 1,
-  kContinue = 2,
-};
-
-struct TraversalStopResult {
-  TraversalStopAction action = TraversalStopAction::kFallbackToDefaultLeaf;
-  std::vector<float> leaf_values{};
-};
-
-class INetMctsTraversalLimiter {
- public:
-  virtual ~INetMctsTraversalLimiter() = default;
-  virtual bool should_stop(const IGameState& root_state, const IGameState& current_state, int depth) const = 0;
-  virtual bool requires_parent_for_stop() const { return false; }
-  virtual bool should_stop_with_parent(
-      const IGameState& root_state,
-      const IGameState& current_state,
-      const IGameState* parent_state,
-      ActionId parent_action,
-      int depth) const {
-    (void)parent_state;
-    (void)parent_action;
-    return should_stop(root_state, current_state, depth);
-  }
-  virtual TraversalStopResult on_traversal_stop(
-      const IGameState& root_state,
-      IGameState& current_state,
-      const IGameState* parent_state,
-      ActionId parent_action,
-      int depth,
-      const IGameRules& rules,
-      const IStateValueModel& value_model,
-      const IPolicyValueEvaluator& evaluator) const {
-    TraversalStopResult out{};
-    std::vector<float> leaf_values;
-    if (on_truncation_leaf(
-            root_state, current_state, parent_state, parent_action,
-            depth, rules, value_model, evaluator, &leaf_values)) {
-      out.action = TraversalStopAction::kUseLeafValue;
-      out.leaf_values = std::move(leaf_values);
-    }
-    return out;
-  }
-  virtual bool on_truncation_leaf(
-      const IGameState& root_state,
-      const IGameState& current_state,
-      const IGameState* parent_state,
-      ActionId parent_action,
-      int depth,
-      const IGameRules& rules,
-      const IStateValueModel& value_model,
-      const IPolicyValueEvaluator& evaluator,
-      std::vector<float>* out_leaf_values) const {
-    (void)root_state; (void)current_state; (void)parent_state;
-    (void)parent_action; (void)depth; (void)rules;
-    (void)value_model; (void)evaluator; (void)out_leaf_values;
-    return false;
-  }
-  virtual void on_ply_complete() const {}
 };
 
 class NetMcts {

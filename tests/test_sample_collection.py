@@ -77,15 +77,20 @@ def test_z_values_match_winner_per_player(game_id):
         game_id=game_id, seed=42, model_path=get_test_model(game_id), simulations=30,
         max_game_plies=100, dirichlet_alpha=0.0, dirichlet_epsilon=0.0,
     )
-    if ep["draw"] or ep["winner"] < 0:
-        pytest.skip("game was draw/inconclusive")
     winner = ep["winner"]
+    is_draw = ep["draw"] or winner < 0
     for s in ep["samples"]:
         z_vals = s["z_values"]
         if not z_vals:
             continue
         player = s["player"]
         z = z_vals[player]
+        if is_draw:
+            # Draw: every player's z should be 0 (zero-sum neutral outcome).
+            assert z == 0, (
+                f"ply {s['ply']}: draw but z_values[{player}]={z} (expected 0)"
+            )
+            continue
         if player == winner:
             assert z > 0, (
                 f"ply {s['ply']}: player {player} won but z_values[{player}]={z}"

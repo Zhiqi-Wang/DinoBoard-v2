@@ -471,11 +471,11 @@ def test_auxiliary_score_finite():
         assert -100 < score < 100, f"ply {s['ply']}: 异常分值 {score}"
 ```
 
-### 8f. 隐藏信息 (IBeliefTracker + NoPeek)
+### 8f. 隐藏信息（IBeliefTracker + ISMCTS root 采样）
 
 ```python
 def test_hidden_info_selfplay_with_high_sims():
-    """高 simulations 会让 NoPeek 的 chance pool 被大量使用，是最好的压力测试。"""
+    """高 simulations 验证 ISMCTS root 采样在重复 sim 下不崩。"""
     ep = dinoboard_engine.run_selfplay_episode(
         game_id=GAME_ID, seed=42, model_path="", simulations=100,
         max_game_plies=50,
@@ -495,13 +495,15 @@ def test_hidden_info_deterministic():
     assert ep1["total_plies"] == ep2["total_plies"]
     assert ep1["winner"] == ep2["winner"]
 
-def test_traversal_stops_positive():
-    """NoPeek limiter 必须实际触发——traversal_stops > 0。"""
-    ep = dinoboard_engine.run_selfplay_episode(
-        game_id=GAME_ID, seed=42, model_path="", simulations=50,
-        max_game_plies=50,
+def test_dag_reuse_active():
+    """DAG 节点应被复用——高 sim 下信息集会被多次访问，dag_reuse_hits 应 > 0。
+    调用 GameSession.apply_ai_action 获取 per-decision stats；不是每个 ep sample 都暴露。"""
+    gs = dinoboard_engine.GameSession(GAME_ID, seed=42)
+    result = gs.apply_ai_action(simulations=200, temperature=0.0)
+    stats = result["stats"]
+    assert stats["dag_reuse_hits"] > 0, (
+        "dag_reuse_hits 一直为 0——hash_public_fields 可能漏了字段"
     )
-    assert ep["traversal_stops"] > 0, "NoPeek limiter 从未触发"
 ```
 
 如果你的游戏有**有状态 belief tracker**（如 Splendor 的 `seen_cards` 追踪），还需要验证 tracker 不偷看隐藏状态：
@@ -646,7 +648,7 @@ python -m pytest tests/test_ai_api_separation.py -v -k <game_id>
 
 ### 10.2 Belief 等价测试（随机游戏必做）
 
-如果游戏有 `belief_tracker` + `stochastic_detector`，必须实现 public-event 协议并通过 belief 等价测试。详见 GAME_DEVELOPMENT_GUIDE.md §17。
+如果游戏有 `belief_tracker`（随机或信息不对称），必须实现 public-event 协议并通过 belief 等价测试。详见 GAME_DEVELOPMENT_GUIDE.md §17。
 
 ```bash
 # 实现 public_event_extractor / public_event_applier /
@@ -717,7 +719,7 @@ GAMES_WITH_TRAINING_FILTER = ["quoridor", "your_game"]         # 如果注册了
 - MCTS 行为正确性
 - ONNX round-trip
 
-如果你的游戏有隐藏信息，还需要在 `test_is_mcts_correctness.py` 的 `TestMctsNoPeekInvariant` 参数化列表中添加你的 game_id，以获得 NoPeek 激活验证和 encoder 信息屏障测试的覆盖。
+如果你的游戏有隐藏信息，还需要把 `game_id` 加入 `tests/test_encoder_respects_hash_scope.py` 和 `tests/test_dag_reuse.py` 的参数化列表，验证 encoder 严格遵守 hash scope、DAG 节点正确复用。
 
 ---
 
@@ -737,7 +739,7 @@ GAMES_WITH_TRAINING_FILTER = ["quoridor", "your_game"]         # 如果注册了
 | 8c | filter 是完整动作集的子集 | BUG-003 |
 | 8d | adjudicator 在超时时判定胜负 | BUG-004 |
 | 8e | auxiliary_score 有限 | DESIGN-001 |
-| 8f | 隐藏信息：高 sim + 确定性 + traversal_stops + 不偷看 | NoPeek 正确性 + **BUG-017** |
+| 8f | 隐藏信息：高 sim + 确定性 + DAG 复用 + 不偷看 | ISMCTS 正确性 + **BUG-017** |
 | 8g | web.json 配置加载 + 难度覆盖 | - |
 | 9 | 多人变体：注册、feature_dim、z_values、轮转 | **通用踩坑 9** |
 | 10 | **AI API 分离测试**：端到端通过 HTTP API 驱动完整对局 | 见下方第 10 步 |

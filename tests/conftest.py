@@ -54,7 +54,11 @@ def model_path(game_id):
     """Fixture providing a random ONNX model path for the current game_id."""
     return get_test_model(game_id)
 
-GAMES_WITH_HEURISTIC = ["quoridor"]
+# Every registered game has a heuristic_picker — "heuristic" difficulty in the
+# web UI requires one, and a uniform-random picker is the no-effort default.
+# Quoridor's picker is a real heuristic (pawn-advance + wall-block); the others
+# are uniform-random fallbacks.
+GAMES_WITH_HEURISTIC = ["tictactoe", "quoridor", "splendor", "azul", "loveletter", "coup"]
 GAMES_WITH_TAIL_SOLVER = ["quoridor", "splendor"]
 GAMES_WITH_TRAINING_FILTER = ["quoridor"]
 

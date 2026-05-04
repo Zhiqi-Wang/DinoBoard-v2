@@ -49,57 +49,54 @@ void append_floor_features(const PlayerState& p, std::vector<float>* out) {
 }  // namespace
 
 template <int NPlayers>
-bool AzulFeatureEncoder<NPlayers>::encode(
+void AzulFeatureEncoder<NPlayers>::encode_public(
     const IGameState& state,
     int perspective_player,
-    const std::vector<ActionId>& legal_actions,
-    std::vector<float>* features,
-    std::vector<float>* legal_mask) const {
+    std::vector<float>* out) const {
   const auto* s = dynamic_cast<const AzulState<NPlayers>*>(&state);
-  if (!s || !features || !legal_mask || perspective_player < 0 || perspective_player >= Cfg::kPlayers) {
-    return false;
+  if (!s || !out || perspective_player < 0 || perspective_player >= Cfg::kPlayers) {
+    return;
   }
-
-  features->clear();
-  features->reserve(static_cast<size_t>(feature_dim()));
 
   // Walls for all players (me first)
   for (int i = 0; i < Cfg::kPlayers; ++i) {
     const int pid = (perspective_player + i) % Cfg::kPlayers;
-    append_wall_features(s->players[pid], features);
+    append_wall_features(s->players[pid], out);
   }
 
   // Pattern lines for all players
   for (int i = 0; i < Cfg::kPlayers; ++i) {
     const int pid = (perspective_player + i) % Cfg::kPlayers;
-    append_pattern_features(s->players[pid], features);
+    append_pattern_features(s->players[pid], out);
   }
 
   // Floors for all players
   for (int i = 0; i < Cfg::kPlayers; ++i) {
     const int pid = (perspective_player + i) % Cfg::kPlayers;
-    append_floor_features(s->players[pid], features);
+    append_floor_features(s->players[pid], out);
   }
 
   // Scores
   for (int i = 0; i < Cfg::kPlayers; ++i) {
     const int pid = (perspective_player + i) % Cfg::kPlayers;
-    features->push_back(std::min(s->players[pid].score, 200) / 200.0f);
+    out->push_back(std::min(s->players[pid].score, 200) / 200.0f);
   }
 
   // Factories
   for (int f = 0; f < Cfg::kFactories; ++f) {
     for (int c = 0; c < kColors; ++c) {
-      features->push_back(static_cast<float>(s->factories[f][c]) / 4.0f);
+      out->push_back(static_cast<float>(s->factories[f][c]) / 4.0f);
     }
   }
 
   // Center
   for (int c = 0; c < kColors; ++c) {
-    features->push_back(static_cast<float>(s->center[c]) / 20.0f);
+    out->push_back(static_cast<float>(s->center[c]) / 20.0f);
   }
 
-  // Bag composition
+  // Bag composition (aggregate count per color — observer-visible:
+  // all players know how many of each color remain in the bag, only
+  // the draw order is hidden).
   std::array<int, kColors> bag_counts{};
   bag_counts.fill(0);
   for (std::int8_t t : s->bag) {
@@ -108,30 +105,30 @@ bool AzulFeatureEncoder<NPlayers>::encode(
     }
   }
   for (int c = 0; c < kColors; ++c) {
-    features->push_back(static_cast<float>(bag_counts[static_cast<size_t>(c)]) / 20.0f);
+    out->push_back(static_cast<float>(bag_counts[static_cast<size_t>(c)]) / 20.0f);
   }
 
   // Metadata
-  features->push_back(s->first_player_token_in_center ? 1.0f : 0.0f);
-  features->push_back(s->current_player_ == perspective_player ? 1.0f : 0.0f);
-  features->push_back(std::min(s->round_index, 20) / 20.0f);
-  features->push_back(static_cast<float>(s->bag.size()) / 100.0f);
-
-  fill_legal_mask(Cfg::kActionSpace, legal_actions, legal_mask);
-
-  return static_cast<int>(features->size()) == feature_dim();
+  out->push_back(s->first_player_token_in_center ? 1.0f : 0.0f);
+  out->push_back(s->current_player_ == perspective_player ? 1.0f : 0.0f);
+  out->push_back(std::min(s->round_index, 20) / 20.0f);
+  out->push_back(static_cast<float>(s->bag.size()) / 100.0f);
 }
 
 template <int NPlayers>
-void AzulBeliefTracker<NPlayers>::init(const IGameState& /*state*/, int perspective_player) {
+void AzulBeliefTracker<NPlayers>::init(
+    int perspective_player, const AnyMap& /*initial_observation*/) {
   perspective_player_ = perspective_player;
 }
 
 template <int NPlayers>
-void AzulBeliefTracker<NPlayers>::observe_action(
-    const IGameState& /*state_before*/,
+void AzulBeliefTracker<NPlayers>::observe_public_event(
+    int /*actor*/,
     ActionId /*action*/,
-    const IGameState& /*state_after*/) {
+    const std::vector<PublicEvent>& /*pre_events*/,
+    const std::vector<PublicEvent>& /*post_events*/) {
+  // Azul has no explicit belief state (bag is shuffled from full counts in
+  // randomize_unseen; tracker doesn't need to maintain progress).
 }
 
 template <int NPlayers>

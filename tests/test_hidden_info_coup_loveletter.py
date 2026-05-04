@@ -12,10 +12,27 @@ import pytest
 from conftest import get_test_model
 
 
+# Coup is temporarily disabled at the build level (see CMakeLists.txt /
+# setup.py / docs/GAME_FEATURES_OVERVIEW.md "诈唬核心游戏" Future Work).
+# Skip the Coup half of this file until the build is restored. The
+# Love Letter tests below still run against the live engine.
+def _coup_available() -> bool:
+    try:
+        dinoboard_engine.game_metadata("coup")
+        return True
+    except Exception:
+        return False
+
+
+coup_skip = pytest.mark.skipif(
+    not _coup_available(), reason="Coup temporarily disabled in build")
+
+
 # ---------------------------------------------------------------------------
 # Coup: hidden info tests
 # ---------------------------------------------------------------------------
 
+@coup_skip
 class TestCoupHiddenInfo:
 
     def test_selfplay_completes(self):
@@ -57,12 +74,14 @@ class TestCoupHiddenInfo:
         assert ep1["total_plies"] == ep2["total_plies"]
         assert ep1["winner"] == ep2["winner"]
 
-    def test_selfplay_has_traversal_stops(self):
+    def test_selfplay_runs_under_ismcts_v2(self):
+        # ISMCTS-v2: root sampling + DAG. Info-leak invariance is separately
+        # covered by the API belief-match tests.
         ep = dinoboard_engine.run_selfplay_episode(
             game_id="coup", seed=42, model_path=get_test_model("coup"),
             simulations=50, max_game_plies=40,
         )
-        assert ep["traversal_stops"] > 0, "NoPeek limiter never triggered in Coup selfplay"
+        assert ep["total_plies"] > 0
 
     def test_arena_completes(self):
         m = get_test_model("coup")
@@ -89,6 +108,7 @@ class TestCoupHiddenInfo:
         assert ep["total_plies"] > 0
 
 
+@coup_skip
 class TestCoupEncoderNoPeek:
     """Verify that the Coup feature encoder never leaks opponent hidden cards.
 
@@ -221,12 +241,15 @@ class TestLoveLetterHiddenInfo:
         assert ep1["total_plies"] == ep2["total_plies"]
         assert ep1["winner"] == ep2["winner"]
 
-    def test_selfplay_has_traversal_stops(self):
+    def test_selfplay_runs_under_ismcts_v2(self):
+        # ISMCTS-v2: no NoPeek / afterstate cap. traversal_stops always 0.
+        # Info-leak invariance separately covered by test_api_mcts_policy_invariance
+        # and TestLoveLetterGuardAccuracy.
         ep = dinoboard_engine.run_selfplay_episode(
             game_id="loveletter", seed=42, model_path=get_test_model("loveletter"),
             simulations=50, max_game_plies=30,
         )
-        assert ep["traversal_stops"] > 0, "NoPeek limiter never triggered in Love Letter selfplay"
+        assert ep["total_plies"] > 0
 
     def test_arena_completes(self):
         m = get_test_model("loveletter")
@@ -274,6 +297,82 @@ class TestLoveLetterEncoderNoPeek:
         assert len(features) == enc["feature_dim"]
 
 
+class TestLoveLetterGuardAccuracy:
+    """Regression for BUG-023: Love Letter MCTS was leaking opponent's true
+    hand when Guard correctly guessed → terminal → no draw → nonce unchanged
+    → NoPeek never fired → MCTS saw the Q=1.0 win from the true state.
+
+    This test plays many games vs. a random opponent and measures the AI's
+    Guard-guess accuracy in positions where the belief tracker has no
+    reveal-based knowledge of the target. Expected behaviour: accuracy is
+    statistically consistent with random guessing over the unknown pool
+    (≈14% for uniform, a bit higher if the tracker uses discard counts to
+    narrow the pool). Under the bug, accuracy exceeded 75%.
+
+    The bound is loose on purpose — tracker CAN narrow the pool from the
+    public discard pile, so the true no-cheat rate is somewhat above 1/7.
+    The test catches any egregious leak that pushes accuracy into the
+    40%+ range.
+    """
+
+    def test_guard_accuracy_not_better_than_bounded_inference(self):
+        # Use the deployed trained model (not a random-weight session model).
+        # BUG-023 manifested through MCTS exploiting the structured Q values
+        # a trained model assigns to "correct guess" branches; a random model
+        # has near-uniform Q so the leak's signal-to-noise is poor and the
+        # test would flake on small N.
+        from pathlib import Path
+        project_root = Path(__file__).resolve().parents[1]
+        model = str(project_root / "games/loveletter/model/loveletter_2p.onnx")
+        if not Path(model).exists():
+            pytest.skip("deployed loveletter_2p model not available")
+        total, correct = 0, 0
+        for seed in range(60):
+            gs = dinoboard_engine.GameSession("loveletter", seed, model, False)
+            while not gs.is_terminal:
+                cp = gs.current_player
+                if cp == 0:
+                    result = gs.get_ai_action(simulations=100, temperature=0.0)
+                    info = result["action_info"]
+                    if info.get("type") == "guard":
+                        target = info["target"]
+                        guess = info["guess"]
+                        state = gs.get_state_dict()
+                        actual = state["players"][target]["hand"]
+                        # Filter out positions where tracker legitimately knows
+                        # the target's hand (via prior Priest/Baron/King).
+                        snap = gs.get_belief_snapshot()
+                        known = snap.get("known_hand", [0] * 4)
+                        if target < len(known) and known[target] > 0:
+                            pass  # skip — legitimate info
+                        else:
+                            total += 1
+                            if guess == actual:
+                                correct += 1
+                    gs.apply_action(result["action"])
+                else:
+                    import random
+                    random.seed(seed * 100 + gs.current_player)
+                    legal = gs.get_legal_actions()
+                    gs.apply_action(random.choice(legal))
+
+        if total == 0:
+            pytest.skip("AI did not play any Guards without prior info")
+
+        rate = correct / total
+        # Clean-AI rate with the deployed model and 100 sims is around 20%
+        # (some bias because the ai_view is seeded with a deterministic
+        # placeholder opp hand from the remaining multiset, biasing guesses
+        # toward common cards like Guard, but the real opp hand is random).
+        # BUG-023 produced 76%. A 40% ceiling catches any regression with
+        # >2x margin over clean and >1.8x margin under the bug.
+        assert rate < 0.40, (
+            f"Love Letter AI Guard accuracy {rate:.1%} ({correct}/{total}) "
+            f"exceeds 40% — probable hidden-info leak in MCTS (see BUG-023 "
+            f"/ the architectural refactor notes). Random baseline is ~14%."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Cross-game: feature encoding consistency after randomize_unseen
 # ---------------------------------------------------------------------------
@@ -282,7 +381,7 @@ class TestRandomizeUnseenConsistency:
     """After randomize_unseen, the encoded features should differ from the
     original but remain valid (correct dimension, legal mask unchanged)."""
 
-    @pytest.mark.parametrize("game_id", ["coup", "loveletter"])
+    @pytest.mark.parametrize("game_id", (["coup", "loveletter"] if _coup_available() else ["loveletter"]))
     def test_samples_have_correct_feature_dim(self, game_id):
         meta = dinoboard_engine.game_metadata(game_id)
         ep = dinoboard_engine.run_selfplay_episode(
@@ -294,7 +393,7 @@ class TestRandomizeUnseenConsistency:
                 f"{game_id} ply {s['ply']}: dim={len(s['features'])}, expected {meta['feature_dim']}"
             )
 
-    @pytest.mark.parametrize("game_id", ["coup", "loveletter"])
+    @pytest.mark.parametrize("game_id", (["coup", "loveletter"] if _coup_available() else ["loveletter"]))
     def test_policy_only_on_legal_actions(self, game_id):
         ep = dinoboard_engine.run_selfplay_episode(
             game_id=game_id, seed=42, model_path=get_test_model(game_id),
@@ -333,11 +432,12 @@ class TestGameSessionTailSolve:
         result = gs.get_ai_action(simulations=10, temperature=0.0)
         assert result["stats"]["tail_solved"] is False
 
-    def test_stats_include_traversal_stops(self):
+    def test_stats_include_dag_reuse_hits(self):
+        # Hidden-info games under ISMCTS-v2 should exercise DAG node reuse.
         gs = dinoboard_engine.GameSession(
-            "coup", seed=42, model_path=get_test_model("coup"))
+            "loveletter", seed=42, model_path=get_test_model("loveletter"))
         result = gs.get_ai_action(simulations=20, temperature=0.0)
-        assert "traversal_stops" in result["stats"]
+        assert "dag_reuse_hits" in result["stats"]
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +446,7 @@ class TestGameSessionTailSolve:
 
 class TestGameSessionTemperature:
 
-    @pytest.mark.parametrize("game_id", ["coup", "loveletter"])
+    @pytest.mark.parametrize("game_id", (["coup", "loveletter"] if _coup_available() else ["loveletter"]))
     def test_nonzero_temperature_adds_variety(self, game_id):
         """With temperature > 0, different seeds should produce different first actions."""
         actions = set()

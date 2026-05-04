@@ -12,13 +12,27 @@ import dinoboard_engine as engine
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
+def _base_game_id(game_id: str) -> str:
+    import re
+    return re.sub(r"_\d+p$", "", game_id)
+
+
 def _find_model_path(game_id: str) -> str:
-    """Resolve the deployed model for a game. Same convention as the game web server."""
-    model_dir = _PROJECT_ROOT / "games" / game_id / "model"
-    for name in ("model_best.onnx", "best_model.onnx"):
-        candidate = model_dir / name
-        if candidate.exists():
-            return str(candidate)
+    """Resolve the deployed model for a game.
+
+    Convention: games/<base>/model/<variant>.onnx. All variants of a game
+    share one model/ directory. The base 2p id is expanded to '<game>_2p'.
+    Same resolver as `platform/game_service/sessions.py::find_model_path`.
+    """
+    base = _base_game_id(game_id)
+    model_dir = _PROJECT_ROOT / "games" / base / "model"
+    variant_name = game_id if game_id != base else f"{base}_2p"
+    candidate = model_dir / f"{variant_name}.onnx"
+    if candidate.exists():
+        return str(candidate)
+    alt = model_dir / f"{game_id}.onnx"
+    if alt.exists():
+        return str(alt)
     return ""
 
 
@@ -167,10 +181,11 @@ class SessionStore:
         else:
             model_path = _find_model_path(game_id)
         if not model_path:
+            base = _base_game_id(game_id)
+            variant = game_id if game_id != base else f"{base}_2p"
             raise FileNotFoundError(
                 f"no trained model found for {game_id}. "
-                f"Expected at games/{game_id}/model/model_best.onnx "
-                f"(or legacy best_model.onnx).")
+                f"Expected at games/{base}/model/{variant}.onnx.")
 
         gs = engine.GameSession(game_id, seed, model_path, False)
 

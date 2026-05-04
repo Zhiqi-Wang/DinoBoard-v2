@@ -436,7 +436,13 @@ def run_training_loop(
             "heuristic_guidance_ratio": heuristic_ratio,
             "heuristic_temperature": train_cfg.get("heuristic_temperature", 0.0),
             "training_filter_ratio": filter_ratio,
-            "nopeek_enabled": step > peek_steps,
+            # peek_steps=N means "first N steps use peek". When step < N the
+            # searcher disables root sampling (nopeek_enabled=False) and runs
+            # on truth; step N onwards switches to ISMCTS (nopeek_enabled=True).
+            # Off-by-one caveat: `step > peek_steps` would wrongly include
+            # step==peek_steps in the peek window — use `>=` to match the
+            # "first N steps" semantics (peek_steps=0 means no peek at all).
+            "nopeek_enabled": step >= peek_steps,
         }
 
         episodes = run_selfplay_batch(
@@ -462,8 +468,7 @@ def run_training_loop(
                 replay_buffer.append((feats, policy, z_rotated, mask, aux))
 
         winners = [ep["winner"] for ep in episodes]
-        p0_wins = sum(1 for w in winners if w == 0)
-        p1_wins = sum(1 for w in winners if w == 1)
+        per_player_wins = [sum(1 for w in winners if w == p) for p in range(num_players)]
         draws_count = sum(1 for w in winners if w < 0)
 
         step_samples = sum(len(ep["samples"]) for ep in episodes)
@@ -518,7 +523,7 @@ def run_training_loop(
         log_parts = [
             f"Step {step}/{steps}: loss={avg_loss:.4f}",
             f"episodes={len(episodes)}, samples={n}",
-            f"p0={p0_wins}, p1={p1_wins}, draw={draws_count}",
+            ", ".join(f"p{p}={per_player_wins[p]}" for p in range(num_players)) + f", draw={draws_count}",
             f"sims={current_sims}",
         ]
         if heuristic_ratio > 0:

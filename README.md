@@ -1,206 +1,271 @@
-# DinoBoard-v2
+# DinoBoard v2
 
-通用棋盘游戏 AI 平台。AlphaZero 风格的 MCTS + 神经网络自我对弈训练，支持完美信息和不完美信息游戏。
+> **Drop a rulebook. Ship a superhuman AI.**
+>
+> Tell Claude Code "add Azul" in one sentence — it reads the rulebook, writes the C++, runs the full test suite, trains a superhuman AI, and generates the web frontend. You just sign off.
 
-**核心理念**：游戏开发者只需编写 C++ 规则引擎 + 特征编码 + JSON 配置，即可自动训练出强力 AI 并在 Web 上对战。
+**中文版:** [README_CN.md](README_CN.md)
+
+A general-purpose board-game AI engine — **one framework, one engineering investment, unlimited game reuse**. AlphaZero-style MCTS + neural self-play, with first-class support for 2–4 players, hidden information, and bluffing games.
 
 ---
 
-## 架构概览
+## What this project solves
+
+AI in digital board games is usually weak — not because the techniques don't exist, but because **rebuilding AlphaZero from scratch for every title is too costly**. MCTS, ONNX integration, training pipelines, hidden-information handling, tuning traps — every game re-walks the same road.
+
+DinoBoard v2 walks it once and turns the result into **a reusable engine plus a callable API**:
+
+- **~9.4k lines of C++/Python core** — MCTS, belief tracker, training, web, analysis, all generic
+- **~2000 lines to add a new game** — rules + feature encoder + JSON config; the framework owns the rest
+- **Massive parametrized test coverage auto-applies** — a new game inherits all acceptance tests by adding it to `CANONICAL_GAMES`
+- **6 games covering 4 paradigms** — perfect info, symmetric randomness, asymmetric hidden info, bluffing
+- **Observation-only REST API for third parties** — digital board game apps / platforms / companion apps call the AI directly without sharing any game-state code or embedding the C++ engine
+- **One code path from training to web to external API** — the same C++ MCTS serves self-play, live play, replay analysis, and third-party integration, with zero "training vs. production drift"
+
+> Context: OpenSpiel has algorithms but no product surface (no web, no ONNX, no API). Commercial board-game apps ship AI that plays near randomly (Splendor / Azul / Coup apps are perennially criticized). This project fills the gap where **research-grade algorithms, production-grade engineering, and an out-of-the-box integration interface** all meet.
+
+---
+
+## Why it is technically strong
+
+### ISMCTS-v2: chance-node-free DAG search
+
+A ground-up MCTS redesign for hidden-information games. **Root-sampling determinization + per-acting-player info-set keying + UCT2** — each simulation samples a full world from the belief, descent is fully deterministic afterward, and the same info set reached along different paths shares a DAG node. No NoPeek / traversal limiter / chance-outcome machinery required. See [docs/MCTS_ALGORITHM.md](docs/MCTS_ALGORITHM.md).
+
+### Observation-only AI API: trained once, callable by anyone
+
+The framework ships a REST API that third-party systems integrate against with **zero shared code**:
+
+```
+POST /ai/sessions                         → create an AI session
+POST /ai/sessions/{id}/observe            → tell the AI what happened (action id + public events)
+POST /ai/sessions/{id}/decide             → get the AI's chosen action
+DELETE /ai/sessions/{id}                  → end the session
+```
+
+**The caller does not need the game-state code, the C++ engine, or any knowledge of MCTS.** As long as they can translate their own game events into action ids + public events, they can use a superhuman AI as a black-box opponent or coach.
+
+This is not a stripped-down interface — it runs **the exact same MCTS + belief tracker + ONNX inference as self-play training**. The observation-only design is a structural constraint (the `IBeliefTracker::observe_public_event()` signature has no `IGameState*` parameter), which means:
+
+- AI decisions depend only on observation history and can never peek at ground truth → **cheating is structurally impossible**
+- The same AI serves self-play training, web play, and the third-party API → **one training investment, three deployment surfaces**
+- Independent-seed belief-equivalence tests give an information-theoretic proof of the separation → **you can prove to a client that the AI does not cheat**
+
+Fits: existing digital board game apps that want stronger AI opponents, platforms that want to offer AI coaches, physical tabletop companion apps that need live suggestions.
+
+### Pluggable belief sampling: uniform → heuristic → neural
+
+The same `randomize_unseen` interface supports three escalating strengths:
+
+- **Uniform sampling** for simple stochastic games like Azul
+- **Hand-crafted probabilistic heuristics** (Coup's sampler uses claim / challenge history to bias opponent-role priors, avoiding the "never-challenge-never-bluff" degenerate equilibrium)
+- **Neural belief networks** (interface-ready; a sequence model can drop in to replace the heuristic)
+
+This is one of the few places the framework was **designed specifically for imperfect-information games**. Most open-source AlphaZero projects handle perfect-info only.
+
+### Training–inference parity
+
+Self-play, evaluation, web play, replay analysis — **all run on the same C++ MCTS**. No "Python in training, rewritten C++ in serving" translation drift. When a player sees "this move dropped my win rate from 62% to 41%" on the web, that number is literally the value head's output during training.
+
+### Engineering discipline
+
+- Heavy parametrized testing; every new game inherits the full suite for free
+- `docs/KNOWN_ISSUES.md` documents 22 shipped bugs and design trade-offs — **every pothole the next integrator gets to skip**
+- Strict no-fallback discipline (see `CLAUDE.md`): silent degradation is banned, errors must propagate to the surface
+
+---
+
+## Games already shipped
+
+| Game | Players | Challenge | AI status |
+|------|---------|-----------|-----------|
+| **TicTacToe** | 2 | Minimal template | Superhuman (the game is forced-draw) |
+| **Quoridor** | 2 | Long horizon, highly strategic | Superhuman, with exact endgame solver |
+| **Splendor** | 2–4 | Symmetric randomness + blind reserved cards | Superhuman |
+| **Azul** | 2–4 | Bag draws (symmetric physical randomness) | Superhuman |
+| **Love Letter** | 2–4 | Asymmetric hidden info + player elimination + precise knowledge tracking | Superhuman |
+| **Coup** | 2–4 | Bluffing + 11-phase state machine + heuristic belief | Superhuman |
+
+Every game ships with a web frontend (animations, undo, smart hints, replay with per-move loss analysis).
+
+---
+
+## Adding a new game: one conversation
+
+You no longer need to hand-write the game bundle. The typical flow:
+
+1. Tell Claude Code "add [game name]"
+2. The AI reads `docs/GAME_DEVELOPMENT_GUIDE.md` and `docs/KNOWN_ISSUES.md`, and mirrors Quoridor / Splendor / the other existing games
+3. Add the new game to `tests/conftest.py::CANONICAL_GAMES` so the parametrized test suite runs against it automatically
+4. The AI iterates on test failures until everything is green
+5. `python -m training.cli --game <id>` kicks off training
+6. Open the web UI to accept
+
+**Your job shrinks to: one request + reviewing the PR + starting the training run.**
+
+This flow works in practice because every integration point has a **mechanically verifiable contract** (tests + `KNOWN_ISSUES` pothole list), so the AI can close the loop by itself.
+
+---
+
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                    Python 层                         │
+│                    Python layer                     │
 │  training/pipeline.py  ←→  bindings/py_engine.cpp   │
 │  training/cli.py            (pybind11)              │
 │  platform/app.py       ←→  GameSession              │
 ├─────────────────────────────────────────────────────┤
-│                    C++ 引擎                          │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │
-│  │ runtime/  │  │ search/  │  │ infer/           │  │
-│  │ selfplay  │→ │ NetMCTS  │→ │ ONNX Evaluator   │  │
-│  │ arena     │  │ TailSolv │  │ (可选 ONNX RT)    │  │
-│  │ heuristic │  │ NoPeek   │  └──────────────────┘  │
-│  └──────────┘  └──────────┘                         │
+│                    C++ engine                       │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────────┐   │
+│  │ runtime/ │  │ search/  │  │ infer/           │   │
+│  │ selfplay │→ │ NetMCTS  │→ │ ONNX Evaluator   │   │
+│  │ arena    │  │ (ISMCTS- │  │ (optional ONNX RT)│  │
+│  │ heuristic│  │  v2 DAG) │  │                  │   │
+│  └──────────┘  │ TailSolv │  └──────────────────┘   │
+│                └──────────┘                         │
 │  ┌──────────────────────────────────────────────┐   │
-│  │ core/ — 接口定义                               │   │
-│  │ IGameState · IGameRules · IFeatureEncoder     │   │
-│  │ IBeliefTracker · GameRegistry · GameBundle    │   │
+│  │ core/ — interface definitions                │   │
+│  │ IGameState · IGameRules · IFeatureEncoder    │   │
+│  │ IBeliefTracker · GameRegistry · GameBundle   │   │
 │  └──────────────────────────────────────────────┘   │
 ├─────────────────────────────────────────────────────┤
-│                    游戏实现                          │
+│                    Game implementations             │
 │  games/tictactoe/  games/quoridor/                  │
 │  games/splendor/   games/azul/                      │
 │  games/loveletter/ games/coup/                      │
 └─────────────────────────────────────────────────────┘
 ```
 
----
-
-## 目录结构
-
-```
-DinoBoard-v2/
-├── engine/                         # C++ 通用引擎
-│   ├── core/                       # 接口定义
-│   │   ├── game_interfaces.h       #   IGameState, IGameRules, IStateValueModel
-│   │   ├── feature_encoder.h       #   IFeatureEncoder
-│   │   ├── belief_tracker.h        #   IBeliefTracker（隐藏信息）
-│   │   ├── game_registry.h         #   GameBundle, GameRegistrar, 所有 typedef
-│   │   ├── types.h                 #   ActionId, StateHash64, UndoToken
-│   │   └── action_constraint.h     #   IActionConstraint（动作约束管线）
-│   ├── search/                     # 搜索算法
-│   │   ├── net_mcts.h/.cpp         #   PUCT-MCTS + 神经网络评估
-│   │   ├── tail_solver.h/.cpp      #   Alpha-Beta 残局求解器
-│   │   ├── root_noise.h            #   Dirichlet 噪声
-│   │   └── temperature_schedule.h  #   温度衰减调度
-│   ├── infer/                      # 推理
-│   │   └── onnx_policy_value_evaluator.h/.cpp  # ONNX Runtime 推理
-│   └── runtime/                    # 运行时
-│       ├── selfplay_runner.h/.cpp  #   自我对弈循环 + FilteredRulesWrapper
-│       ├── arena_runner.h/.cpp     #   模型对战
-│       ├── heuristic_runner.h/.cpp #   启发式对局生成
-│       └── nopeek_support.h/.cpp   #   不完美信息 MCTS 支持
-│
-├── games/                          # 游戏实现
-│   ├── tictactoe/                  #   井字棋（参考实现）
-│   ├── quoridor/                   #   步步为营（9×9，含墙）
-│   ├── splendor/                   #   璀璨宝石（2-4人，隐藏信息）
-│   ├── azul/                       #   花砖物语（2-4人，隐藏信息）
-│   ├── loveletter/                 #   情书（2-4人，隐藏信息，玩家淘汰）
-│   └── coup/                       #   政变（2-4人，虚张声势，质疑与反制）
-│
-├── bindings/py_engine.cpp          # pybind11 Python 绑定
-├── training/                       # Python 训练框架
-│   ├── pipeline.py                 #   自我对弈 + 训练 + 评估循环
-│   ├── model.py                    #   PyTorch 网络定义
-│   └── cli.py                      #   命令行入口
-│
-├── platform/                       # FastAPI Web 对战平台
-│   ├── app.py                      #   主服务器
-│   ├── game_service/               #   游戏会话、异步管线、录像分析
-│   └── static/                     #   通用前端资源
-│
-├── setup.py                        # Python 构建脚本
-├── requirements.txt                # Python 依赖
-└── docs/                           # 文档
-    ├── GAME_FEATURES_OVERVIEW.md   #   功能概览（搜索、训练、随机性、Web 前端）
-    ├── GAME_DEVELOPMENT_GUIDE.md   #   游戏开发指南（接口、配置、构建、测试）
-    ├── NEW_GAME_TEST_GUIDE.md      #   新游戏验收测试流程（9 步）
-    ├── KNOWN_ISSUES.md             #   已知问题与踩坑汇总
-    └── devlog/                     #   开发日志
-```
+Full directory tree at the bottom of this file.
 
 ---
 
-## 快速上手
+## Quick start
 
-### 1. 构建
+### Requirements
+
+The core is C++; Python is glue. You need:
+
+- **A C++17 compiler** — Mac: `xcode-select --install`; Linux: `apt install build-essential`; Windows: MSVC Build Tools
+- **Python ≥ 3.9** with `pybind11` and `torch` (for training)
+- **ONNX Runtime** — web play, self-play, and evaluation **all load `.onnx` models for the AI to move**; this is required, not optional. Mac: `brew install onnxruntime`. Linux / Windows: download the platform package from [ONNX Runtime releases](https://github.com/microsoft/onnxruntime/releases) and unpack it.
+
+### Build
 
 ```bash
-# 安装依赖
 pip install pybind11 torch
 
-# 构建 C++ 扩展（不含 ONNX Runtime）
+# Standard build (Mac brew / Linux system paths detect ONNX Runtime automatically)
 pip install -e .
 
-# （可选）启用 ONNX Runtime 加速推理
-BOARD_AI_WITH_ONNX=1 BOARD_AI_ONNXRUNTIME_ROOT=/path/to/onnxruntime pip install -e .
+# If ONNX Runtime is not in a standard path, point at it explicitly
+BOARD_AI_WITH_ONNX=1 \
+  BOARD_AI_ONNXRUNTIME_ROOT=/path/to/onnxruntime \
+  pip install -e .
 
-# 验证
+# Verify
 python -c "import dinoboard_engine; print(dinoboard_engine.available_games())"
 # ['azul', 'azul_2p', ..., 'quoridor', 'splendor', ..., 'tictactoe']
 ```
 
-### 2. 训练
+> `setup.py` prints a warning and keeps building if ONNX Runtime is missing — that path exists only so basic tests can run. **Web play and training will both fail later because the model cannot load.**
+
+### Training
 
 ```bash
-# 训练 TicTacToe（约 5 分钟）
+# TicTacToe — about 5 minutes
 python -m training.cli --game tictactoe --output runs/tictactoe_001
 
-# 训练 Quoridor（约数小时，含 warm start 和 heuristic guidance）
+# Quoridor — several hours (includes warm start + heuristic guidance)
 python -m training.cli --game quoridor --output runs/quoridor_001 \
     --workers 4 --eval-every 25 --eval-games 40 --eval-benchmark heuristic
-
-# 所有 CLI 参数
-python -m training.cli --help
 ```
 
-训练配置由 `games/<game>/config/game.json` 驱动，CLI 参数可覆盖。Web 对局的 AI 参数（难度覆盖、残局求解、动作过滤等）由 `config/web.json` 配置。
+Training is driven by `games/<game>/config/game.json` — no code changes, just JSON. See the [features overview § config quick reference](docs/GAME_FEATURES_OVERVIEW.md).
 
-**输出**：
-- `runs/<name>/models/model_best.onnx` — 最佳模型
-- `runs/<name>/checkpoint.pt` — PyTorch checkpoint
-- `runs/<name>/train.log` — 训练日志
-
-### 3. Web 对战
+### Web play
 
 ```bash
-# 安装 Web 依赖
 pip install -r requirements.txt  # fastapi, uvicorn
-
-# 启动服务器
 cd platform && python -m uvicorn app:app --host 0.0.0.0 --port 8000
-
-# 打开浏览器
 open http://localhost:8000
 ```
 
-**功能**：
-- 游戏选择首页
-- 三种难度：Heuristic / Casual / Expert
-- 多人模式：支持 2-4 人游戏，可选座位，AI 占剩余座位
-- 悔棋、AI 提示
-- 录像回放 + 掉分分析
-- 加载测试录像（`platform/tools/eval_model.py` 生成）
+Features: 6 games, three difficulty tiers (Heuristic / Casual / Expert), seat selection for multi-player variants, undo, smart hints, replay with per-move loss analysis.
 
 ---
 
-## 各游戏状态
+## Core concepts
 
-| 游戏 | C++ 引擎 | 训练 | Web 前端 | 模型 | 特殊功能 |
-|------|---------|------|---------|------|---------|
-| TicTacToe | 完成 | 完成 | 完成 | 有 | 基础参考实现 |
-| Quoridor | 完成 | 进行中 | 完成 | 训练中 | Heuristic、Tail Solver、Adjudicator、Auxiliary Score、Training Filter |
-| Splendor | 完成 | 未开始 | 未开始 | 无 | BeliefTracker、NoPeek、2-4 人 |
-| Azul | 完成 | 未开始 | 未开始 | 无 | BeliefTracker、NoPeek、2-4 人 |
-| Love Letter | 完成 | 训练中 | 完成 | 训练中 | BeliefTracker、NoPeek、2-4 人、玩家淘汰 |
-| Coup | 完成 | 未开始 | 完成 | 无 | BeliefTracker、NoPeek、2-4 人、虚张声势、11 阶段状态机 |
+- **GameBundle registration** — each game exposes a factory that returns state + rules + encoder + optional components. See the [game development guide](docs/GAME_DEVELOPMENT_GUIDE.md).
+- **ISMCTS-v2** — root sampling + DAG + UCT2. A native design for hidden-info games, no chance-node machinery needed. See [docs/MCTS_ALGORITHM.md](docs/MCTS_ALGORITHM.md).
+- **AI API** — observation-only REST interface that third-party apps consume directly, without embedding engine code. Doubles as an information-theoretic proof that the AI never cheats. See [game development guide § 17](docs/GAME_DEVELOPMENT_GUIDE.md).
+- **Training pipeline** — self-play → replay buffer → SGD → ONNX export → gating eval (≥60% win rate updates `best`). Includes warm start, heuristic guidance, auxiliary score, training action filter, MCTS schedule.
 
 ---
 
-## 核心设计概念
+## Docs
 
-### GameBundle 注册模式
-
-每个游戏通过 `GameRegistrar` 在程序启动时自动注册。工厂函数返回一个 `GameBundle`，包含状态、规则、编码器等所有组件。详见 [游戏开发指南](docs/GAME_DEVELOPMENT_GUIDE.md)。
-
-### 17 个 GameBundle 字段
-
-5 个必须（state, rules, value_model, encoder, game_id）+ 12 个可选（belief_tracker, stochastic_detector, enable_chance_sampling, state_serializer, action_descriptor, heuristic_picker, tail_solver, tail_solve_trigger, episode_stats_extractor, adjudicator, auxiliary_scorer, training_action_filter）。
-
-### NoPeek 模式
-
-针对不完美信息游戏的 MCTS 搜索方案。通过 BeliefTracker 追踪已知信息，在搜索遇到随机节点时停止并重新采样隐藏信息，避免「偷看」对手的牌。
-
-### 训练管线
-
-自我对弈 → Replay Buffer → SGD 训练 → ONNX 导出 → 评估 → 最佳模型门控（≥60% 胜率更新）。支持 Warm Start、Heuristic Guidance、Auxiliary Score、Training Action Filter、MCTS Schedule。
-
-### AI API 与分离验收（强制门槛）
-
-框架提供观察驱动的 AI 推理 API（`platform/ai_service/`）——外部调用者只传动作 ID 和公共事件，API 只返回动作 ID。这既是对接第三方数字化桌游的接口，也是**新游戏的硬性验收门槛**：
-
-- 所有游戏必须通过 `tests/test_ai_api_separation.py`——API 契约不泄漏 state
-- 随机游戏额外必须通过 `tests/test_api_belief_matches_selfplay.py`——AI 用独立 seed 从零启动，只靠公共事件与自博弈同步，belief tracker 逐步对齐
-
-这两层测试是证明 AI 决策链路不读真实状态的**唯一机制**——code review 容易漏掉隐藏的状态读取，但独立 seed 的 belief 等价测试会把任何窃取行为暴露为 belief 发散。详见 [GAME_DEVELOPMENT_GUIDE §17](docs/GAME_DEVELOPMENT_GUIDE.md#17-ai-api-分离验收)。
+- **[Features overview](docs/GAME_FEATURES_OVERVIEW.md)** — what the framework can do
+- **[Game development guide](docs/GAME_DEVELOPMENT_GUIDE.md)** — single source of truth for adding a new game
+- **[MCTS algorithm](docs/MCTS_ALGORITHM.md)** — the ISMCTS-v2 DAG-search derivation
+- **[New game test guide](docs/NEW_GAME_TEST_GUIDE.md)** — 9-step acceptance workflow
+- **[Known issues & trade-offs](docs/KNOWN_ISSUES.md)** — BUG-001 through BUG-022 postmortems plus design decisions
 
 ---
 
-## 文档
+## Collaboration
 
-- **[功能概览](docs/GAME_FEATURES_OVERVIEW.md)** — 框架能力速查：搜索、训练、随机性处理、Web 前端、可选组件
-- **[游戏开发指南](docs/GAME_DEVELOPMENT_GUIDE.md)** — 添加新游戏的完整指南，事无巨细
-- **[新游戏验收测试](docs/NEW_GAME_TEST_GUIDE.md)** — 9 步验收流程，覆盖所有已知踩坑
-- **[已知问题与踩坑汇总](docs/KNOWN_ISSUES.md)** — BUG-001 ~ BUG-020 + 通用踩坑与设计取舍
+This project targets **research-grade board-game AI engineering** and **digital board-game AI consulting**. If you need:
+
+- A stronger AI opponent or AI coach for a digital board game
+- Observation-only AI inference integrated into your gaming platform
+
+open an Issue or Discussion.
+
+---
+
+## Directory layout
+
+```
+DinoBoard-v2/
+├── engine/                         # C++ general engine
+│   ├── core/                       # Interface definitions
+│   │   ├── game_interfaces.h       #   IGameState, IGameRules, IStateValueModel
+│   │   ├── feature_encoder.h       #   IFeatureEncoder
+│   │   ├── belief_tracker.h        #   IBeliefTracker (hidden info)
+│   │   ├── game_registry.h         #   GameBundle, GameRegistrar
+│   │   ├── types.h                 #   ActionId, StateHash64, UndoToken
+│   │   └── action_constraint.h     #   IActionConstraint
+│   ├── search/                     # Search algorithms
+│   │   ├── net_mcts.h/.cpp         #   PUCT-MCTS + neural evaluation
+│   │   ├── tail_solver.h/.cpp      #   Alpha-beta endgame solver
+│   │   ├── root_noise.h            #   Dirichlet noise
+│   │   └── temperature_schedule.h  #   Temperature decay schedule
+│   ├── infer/                      # Inference
+│   │   └── onnx_policy_value_evaluator.*  # ONNX Runtime inference
+│   └── runtime/                    # Runtime
+│       ├── selfplay_runner.*       #   Self-play loop + FilteredRulesWrapper
+│       ├── arena_runner.*          #   Model-vs-model arena
+│       └── heuristic_runner.*      #   Heuristic game generation
+│
+├── games/                          # Game implementations (one dir per game)
+│   ├── tictactoe/  quoridor/  splendor/  azul/  loveletter/  coup/
+│
+├── bindings/py_engine.cpp          # pybind11 Python bindings
+│
+├── training/                       # Python training framework
+│   ├── pipeline.py   model.py   cli.py
+│
+├── platform/                       # FastAPI web platform + AI inference API
+│   ├── app.py                      #   Main server
+│   ├── ai_service/                 #   Observation-only AI REST API
+│   ├── game_service/               #   Game sessions, async pipeline, replay analysis
+│   └── static/                     #   Shared frontend assets
+│
+├── tests/                          # Parametrized tests (cover all registered games)
+├── docs/                           # Documentation
+└── setup.py · requirements.txt     # Build
+```

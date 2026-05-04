@@ -3,36 +3,52 @@
 > 记录 DinoBoard-v2 开发过程中发现并修复的 bug，以及需要注意的设计取舍。
 > 目的：避免未来开发者重复踩坑。
 
+根据受众不同分为两大类：
+
+- **框架层 Issues**：影响 `engine/` / `engine/runtime/` / `engine/search/` / `training/` / `bindings/` / `platform/` 的问题。修改框架代码前建议通读——这些是架构层面的坑，跨所有游戏生效。
+- **游戏层 Issues**：只影响 `games/<name>/` 下具体游戏的 rules / encoder / tracker / config。开发新游戏时**应着重参考本节**——里面的模式（Splendor 不偷看、Love Letter 揭牌事件）是游戏开发者常见的踩坑点。
+
 ---
 
 ## 目录
 
-1. [BUG-001] Tail Solver 转置表标志位反转
-2. [BUG-002] 平局 z 值赋值错误
-3. [BUG-003] 训练-评估动作空间不一致
-4. [BUG-004] Heuristic Runner 缺少 Adjudicator 支持
-5. [BUG-005] FilteredRulesWrapper 的 const_cast
-6. [BUG-006] Replay Buffer 样本利用率
-7. [DESIGN-001] Tail Solver 分差偏好 (margin_weight)
-8. [DESIGN-002] 自博弈全链路必须走 C++
-9. [DESIGN-003] Web 平台禁止占全局锁做重计算
-10. [DESIGN-004] Gating 与模型管理
-11. [BUG-007] pipeline.py 用初始局面特征训练所有样本
-12. [BUG-008] Splendor temperature_schedule 被静默忽略
-13. [BUG-009] pipeline.py 重写丢失三项训练改进
-14. [BUG-010] pipeline.py 重写丢失 Replay Buffer
-15. [BUG-011] ONNX 未编译导致 MCTS 使用均匀策略
-16. [BUG-012] model_init.onnx 导出顺序错误
-17. [BUG-013] ONNX 不是每步导出，selfplay 用旧模型
-18. [BUG-014] best model 路径指向 latest 文件被覆盖
-19. [BUG-015] pipeline.py 用 z_values 取值但 C++ 不总是填充
-20. [BUG-016] legal mask 被 filter 缩小导致 free 模式失效
-21. [BUG-017] SplendorBeliefTracker 偷看牌堆内容
-22. [BUG-018] Adjudicator z_values 不零和 + 标量 value head 的 3p+ 展开 bug
-23. [BUG-019] 多人模式全链路 2p 硬编码
-24. [BUG-020] Pipeline 分析使用错误的 stats key 导致 expert AI 卡死
+### 框架层 Issues（搜索 / 训练 / 运行时 / 平台）
+
+- [BUG-001] Tail Solver 转置表标志位反转
+- [BUG-002] 平局 z 值赋值错误
+- [BUG-003] 训练-评估动作空间不一致
+- [BUG-004] Heuristic Runner 缺少 Adjudicator 支持
+- [BUG-005] FilteredRulesWrapper 的 const_cast
+- [BUG-006] Replay Buffer 样本利用率
+- [BUG-007] pipeline.py 用初始局面特征训练所有样本
+- [BUG-008] pipeline.py 读取嵌套 `temperature_schedule` 时静默失败
+- [BUG-009] pipeline.py 重写丢失三项训练改进
+- [BUG-010] pipeline.py 重写丢失 Replay Buffer
+- [BUG-011] ONNX 未编译导致 MCTS 使用均匀策略
+- [BUG-012] model_init.onnx 导出顺序错误
+- [BUG-013] ONNX 不是每步导出，selfplay 用旧模型
+- [BUG-014] best model 路径指向 latest 文件被覆盖
+- [BUG-015] pipeline.py 用 z_values 取值但 C++ 不总是填充
+- [BUG-016] legal mask 被 filter 缩小导致 free 模式失效
+- [BUG-018] Adjudicator z_values 不零和 + 标量 value head 的 3p+ 展开 bug
+- [BUG-019] 多人模式全链路 2p 硬编码
+- [BUG-020] Pipeline 分析使用错误的 stats key 导致 expert AI 卡死
+- [BUG-021] fly 动画继承源容器尺寸，导致 Azul 砖巨大化 + 顺序播放卡顿
+- [BUG-022] cancel_pipeline 误清 precompute，导致 expert 第一手 AI 响应多 8 秒
+- [BUG-024] GameSession MCTS 搜索在真实状态上跑，应隔离为 AI view
+- [BUG-025] pipeline.py `nopeek_enabled` off-by-one：peek_steps=0 被错误解读为"第 0 步 peek"
+- [BUG-026] ISMCTS-v2 DAG hash collision → MCTS 选中非法 action 崩溃
+
+### 游戏层 Issues（具体游戏的规则 / 编码器 / tracker）
+
+- [BUG-017] SplendorBeliefTracker 偷看牌堆内容（Splendor）
+- [BUG-023] Love Letter AI 永远猜对 Guard — terminal-by-elimination 漏过 NoPeek 检测（Love Letter，**已被 ISMCTS-v2 重构整体解决**）
 
 ---
+
+# 框架层 Issues
+
+以下所有 issue 都位于 `engine/` / `engine/runtime/` / `engine/search/` / `training/` / `bindings/` / `platform/` ——修改框架代码前应通读，跨所有游戏生效。
 
 ## [BUG-001] Tail Solver 转置表标志位反转
 
@@ -264,7 +280,7 @@ C++ selfplay runner 已经在每个采样点正确编码了 features（`Selfplay
 
 ### 教训
 
-**永远不要在 Python 侧重新实现 C++ 已经做好的事**（参见 DESIGN-002）。features 的编码必须发生在采样点的实际游戏状态上，而 C++ selfplay runner 正是这么做的。
+**永远不要在 Python 侧重新实现 C++ 已经做好的事**（详见 CLAUDE.md 的 "Training Pipeline" 原则）。features 的编码必须发生在采样点的实际游戏状态上，而 C++ selfplay runner 正是这么做的。
 
 ---
 
@@ -660,6 +676,7 @@ mask 机制有两种语义：(1) "不合法，不存在"——应该 mask 掉；
 
 ## [BUG-017] SplendorBeliefTracker 偷看牌堆内容
 
+**分类**：游戏层（Splendor）— 开发新游戏时请参考此案例避免 tracker 读 state 隐藏字段
 **状态**：已修复
 **文件**：`games/splendor/splendor_net_adapter.cpp`
 **严重程度**：高 — AI 精确知道牌堆组成，等于作弊
@@ -795,81 +812,348 @@ C++ 结构体字段名为 `NetMctsStats::best_action_value`，但 `bindings/py_e
 
 将 `pipeline.py` 中所有 `["stats"]["best_action_value"]` 替换为 `["stats"]["best_value"]`。
 
+**复发（2026-05-03）**：前端 `platform/static/general/pipeline.js:37-38` 犯了**完全相同的错**——读 `st.ai_stats.best_action_value` 而不是 `best_value`。表现为 Web 对局里"对手预估胜率"永远是 "--"。已修复。这证明教训里说的"新增代码时确认实际 key"在实际开发里很容易被忘——同一个 pit 隔几周在不同文件里被踩了两次。
+
 ### 教训
 
-pybind 导出层可能对字段名做重命名。引用 C++ 导出数据时，应以 Python 侧实际拿到的 key 为准，而非 C++ 结构体字段名。新增 pipeline 代码时可用 `print(result.keys(), result["stats"].keys())` 先确认实际 key。
+pybind 导出层可能对字段名做重命名。引用 C++ 导出数据时，应以 Python 侧实际拿到的 key 为准，而非 C++ 结构体字段名。这个坑**任何消费 MCTS stats 的代码都可能踩**（后端 pipeline.py、前端 pipeline.js、未来的日志/分析工具等），两次已经验证。
+
+**防止再次复发的查表**——`stats` dict 的 Python 侧 key（见 `bindings/py_engine.cpp` 中 `get_ai_action` 的 `st[...]`）：
+
+| Python key | C++ struct 字段 |
+|-----------|----------------|
+| `simulations` | `simulations_done` |
+| `best_value` | `best_action_value` ← 重命名 |
+| `root_values` | `root_values` |
+| `action_values` | `root_edge_values`（展开成 `{action_id: [values]}` dict） ← 重命名 + 结构变化 |
+| `tail_solved` | `tail_solved` |
+| `tail_solve_value` | `tail_solve_value` |
+| `traversal_stops` | `traversal_stops` |
+
+**调试姿势**：新增读 stats 的代码之前先 `print(st.keys(), st['ai_stats'].keys())` 一次，或直接查上面这张表。别猜。
 
 ---
 
-## 设计取舍
+## [BUG-021] fly 动画继承源容器尺寸，导致 Azul 砖巨大化 + 顺序播放卡顿
 
-### DESIGN-001: Tail Solver 分差偏好 (margin_weight)
+**状态**：已修复
+**文件**：`platform/static/general/animate.js`，`games/azul/web/azul.js`
+**严重程度**：中 — 前端可用性问题，不影响训练 / AI 决策，但 Azul 对局手感非常糟糕
 
-**动机**：残局求解器默认只区分胜/负/平。当存在多条必赢路线时，选哪条无所谓。但在某些游戏（如 Quoridor）中，"赢得更多"有实际意义——例如在对手离目标更远时赢下比赛。
+### 问题描述
 
-**方案**：终局节点评估公式改为 `terminal_value + margin_weight × auxiliary_scorer(state, perspective)`。`margin_weight` 设为很小的值（如 0.01），确保不影响胜负判定（terminal_value 为 ±1），但在等价必赢路线间偏好分差更大的。
+Azul 前端每次出动作后，飞行的砖动画看起来"巨大"，而且拿的砖、落到 center 的剩余砖、first-player 令牌是**一个接一个**播的，整局下来每步等 1s+ 才能继续。
 
-**配置**：`game.json` 中设置 `tail_solve_margin_weight`，同时需要注册 `auxiliary_scorer`。如果没有注册 scorer 则该参数无效。
+两个子 bug：
 
-**采用条件**：tail solve 的结果只在 `|value| >= 1.0` 时采用（即证明必赢/必输）。平局或搜索未完成不会替换 MCTS 结果。触发条件仅为 `ply >= tail_solve_start_ply`。
+1. **尺寸 bug**：`animate.js::stepFly` 用 `fromRect.width/height` 作为飞行元素的 css 尺寸。Azul `describeTransition` 的 `from` 指向整个工厂 disc（`[data-factory="0"]`，~120×120px），结果飞的砖是 120×120 的巨型 blob，而棋盘上的 `.tile` 实际只有 34×34。
 
-**注意事项**：
-- 安全约束：`margin_weight × max(|scorer_value|) < 1.0`，否则平局可能被误判为胜利
-- `auxiliary_scorer` 没有接口层面的返回值范围限制，需要开发者自己保证上述约束
-- Quoridor 用 `tanh` 确保了 (-1, 1)；如果你的 scorer 无界，需要相应减小 `margin_weight`
-- 该功能由 `selfplay_runner` 自动将 `auxiliary_scorer` 作为 `margin_scorer` 传入 tail solver
+2. **顺序播放 bug**：`describeTransition` 给每个颜色去向推一个 fly step，`playTransition` 逐步 `await`，每步 350ms + 60ms 间隔。如果一次出牌有 1 个目标色 + 3 个去 center 的剩余色 + FP 令牌，总耗时 ~1700ms，直观感受是"一个一个飞"。
 
-### DESIGN-002: 自博弈全链路必须走 C++
+### 修复
 
-**准则**：selfplay、eval vs heuristic、arena 等所有对弈路径必须完整走 C++ 实现，禁止 Python 回退。
+**框架层** (`animate.js`):
+- 新增 `flyGroup` step type：`flights[]` 数组里的所有子飞行并行 `Promise.all`，总耗时 = 最慢的一条
+- `fly` step 支持可选 `width`/`height` 字段，显式指定时覆盖 `fromRect` 的继承。默认行为不变（继承 rect 尺寸），Splendor 等现有游戏不受影响
+- 飞行定位从"左上角对齐"改为"中心对齐 fromRect / toRect"——小 flyer 在大容器里不再跑偏到角落
 
-**背景**：早期 free eval vs heuristic 使用 Python `GameSession` 逐步调用 C++ — 每一步都要 Python → C++ → Python 来回跳，有 GIL 开销和 pybind11 序列化开销。当 eval 需要上百局、每局几十步时，这个开销非常显著。
+**Azul 前端** (`azul.js`):
+- 把原来的多个 sequential fly step 合并为一个 `flyGroup`（选中色去目标 + 剩余色去 center + FP 令牌去地板，全部并行）
+- 每个 flight 明确 `width: 34, height: 34`（= 棋盘 tile 实际尺寸）
 
-**实现**：
-- `run_selfplay_episode`（C++）：selfplay 全链路
-- `run_constrained_eval_vs_heuristic(constrained=True)`（C++）：约束 eval
-- `run_constrained_eval_vs_heuristic(constrained=False)`（C++）：自由 eval
-- `run_arena_match`（C++）：模型对弈
+### 教训
 
-所有函数在 `py::gil_scoped_release` 下一次性跑完整局，GIL 释放期间不回到 Python。
-
-**规则**：如果新增对弈路径或 eval 函数，必须在 C++ 侧实现完整对局循环。如果 C++ 侧不支持所需功能，应报错（`throw std::runtime_error`），而非写 Python 回退。
-
----
-
-### DESIGN-003: Web 平台禁止占全局锁做重计算
-
-**准则**：web 平台（`platform/game_service/`）中，永远不要持有全局锁（如 SQLite 写锁、全局 mutex）的同时进行 MCTS 搜索或其他重计算。
-
-**背景**：MCTS 搜索可能耗时数秒到数十秒（5000 simulations）。如果在持有全局锁期间执行搜索，所有其他请求（包括不相关的 session）都会被阻塞，导致整个服务无响应。
-
-**当前状态**：v2 web 平台使用纯内存 dict 存储 session，没有 SQLite。重计算（AI 思考、分析预计算）在 `ThreadPoolExecutor` 中执行，每个 session 有独立的 `pipeline_lock`（粒度为 session 级别）。这是正确的设计。
-
-**规则**：
-- 如果未来引入 SQLite 或其他带全局锁的存储，所有重计算必须在锁外完成——先获取所需数据，释放锁，做计算，再获取锁写回结果
-- 锁的粒度应为 session 级别，不应为全局级别
-- 对弈计算应在线程池中执行，不阻塞请求处理线程
+1. **飞行动画不应该默认继承源容器的 bounding rect**——当 `from` 是一个大容器（工厂 disc、对手 board 区）而飞行的"逻辑对象"是小单位（一块砖、一个 gem）时，尺寸会错得离谱。应该以飞行元素自身的 CSS 尺寸或调用方显式指定为准。
+2. **多段连续 fly 默认顺序播放对桌游来说太慢**：一个真实物理动作（从一堆砖里拿同色、剩的推中间）在桌面上是一瞬间发生，不是慢动作分解。新游戏接入动画时，**凡是一个游戏动作物理上同时发生的多个位移，应该用 `flyGroup`，不是多个 `fly` 串联**。
+3. 新游戏如果 `from` 选择器指向容器而非单体元素，写 `describeTransition` 时必须显式传 `width`/`height`，否则就会撞这个坑。新游戏验收时应该实际在浏览器里走几步看动画，不能只靠单元测试通过。
+4. 框架层的默认行为（继承 rect 尺寸）保留是为了向后兼容 Splendor——Splendor 的 `from` 一般就是 token 或卡牌本身，大小合适。但该默认行为是"陷阱型"默认——以后可能考虑改成必须显式传尺寸，或者把默认行为改为"从 createElement 的元素自然尺寸推导"。
 
 ---
 
-### DESIGN-004: Gating 与模型管理
+## [BUG-022] cancel_pipeline 误清 precompute，导致 expert 第一手 AI 响应多 8 秒
 
-**准则**：latest model 永远不被替换。
+**状态**：已修复
+**文件**：`platform/game_service/pipeline.py`
+**严重程度**：中 — 前端性能问题，不影响训练和 AI 决策质量
 
-**动机**：训练过程中需要跟踪"历史最佳"模型，用于对弈评估和最终输出。但 latest 模型（每步训练产出）必须始终保持为最新，永不回退。
+### 问题描述
 
-**设计**：
+Expert 难度下，人类作为先手走第一步后，AI 要等 10 秒左右才落子。按配置（analysis=500 sims, expert=500 sims）理论耗时应该 < 100ms。
 
-两个独立的模型槽位：
-- **latest** (`model_latest.onnx`)：**每步训练后都重新导出**，`current_model_path` 指向它。下一步 selfplay 立刻使用新权重。**永不被替换或回退**。
-- **best** (`model_best.onnx`)：独立文件。初始为 init/warm model。仅在 latest vs best 对弈胜率 >= `gating_accept_win_rate`（默认 60%）时，从 latest **复制**过来。
+### 根因
 
-定期存档：`model_step_NNNNN.onnx` 按 `save_every` 间隔保存，用于事后实验和分析，不参与训练流程。
+`signal_cancel()` 在同一个函数里做了两件事：取消 pipeline 阶段机 + 清空 precompute 缓存。而 `apply_action` 路由处理人类动作时第一步调 `cancel_pipeline()`（为了确保没有在跑的 pipeline worker 还会写 session），间接触发了 `precompute_clear()`。
 
-**关键约束**：
-- **每步必须导出 ONNX**。不导出意味着后续所有 step 的 selfplay 用的都是旧模型，训练数据和网络严重脱节。
-- best 更新时必须用 `shutil.copy2()`（复制文件），而非仅更新路径指针。否则后续训练步覆盖 `model_latest.onnx` 时 best 的内容也跟着变了，gating 形同虚设。
-- latest 永不被 best 替换——即使模型退化（loss 上升、win rate 下降），selfplay 仍使用最新模型。Gating 的作用是保存一个"已验证有效"的检查点，不是控制 selfplay 使用哪个模型。
-- Eval 对弈的 simulations 使用最终值（不随 MCTS schedule 变化），确保评估标准一致。
+踩坑流程：
+1. 游戏创建时人类先手 → `schedule_precompute(初始局面)` 立刻后台跑 MCTS，~30ms 完成，结果缓存在 `sess["precompute"]["result"]`
+2. 人类点击落子 → `POST /action` → `apply_action` 首行 `cancel_pipeline(sess)`
+3. `cancel_pipeline → signal_cancel → precompute_clear` —— 把刚刚缓存的 precompute 结果清成 `None`
+4. Pipeline worker 进入 `_analyze_user_move`，while 循环等 `pc["result"] is not None`
+5. 等不到 → 撑满 8 秒 deadline → 触发 fallback inline MCTS
+6. 总耗时 = 8 秒等待 + fallback MCTS + AI decision ≈ 10 秒
 
-**Eval 结构**：每次 eval 包含两部分——benchmark eval（可选，通过 `--eval-benchmark` 配置）和 gating eval（固定执行）。benchmark 支持 `heuristic_constrained`、`heuristic_free`、ONNX 路径，可同时指定多个。gating 是 latest vs best 对打，胜率 ≥ 阈值时更新 best。两者互不排斥。
+AI 后续每一步就正常了（因为从 pipeline 结束开始，precompute 是在 AI 回合之后重新 schedule 的）。
+
+### 修复
+
+`signal_cancel` 里移除 `precompute_clear` 调用。precompute 是独立于 pipeline 的后台任务（在 `PRECOMPUTE_EXECUTOR`，与 `PIPELINE_EXECUTOR` 不共享状态），pipeline 取消不应该波及它。
+
+真正需要清 precompute 的场景（undo / state 重建）在 `step_back` handler 里原本就显式调用 `precompute_clear`，不依赖 `cancel_pipeline` 的副作用，所以删除后不会回归 undo 逻辑。
+
+### 教训
+
+1. **副作用打包到"看起来该一起做"的函数里是坑**：`cancel_pipeline` 在语义上只负责 pipeline，但它悄悄顺带清 precompute，调用方不看实现就猜不到。修复后 `signal_cancel` 的 docstring 明写"does NOT touch precompute — callers that need it clear must call precompute_clear() explicitly"。
+2. **这个 bug 的症状（"第一手慢 10 秒"）很容易被错误归因到"AI 计算慢"**。排查时发现 10 秒 ≈ 8 秒等待 + 两次实际 MCTS 时，8 秒这个具体数字暴露了是 deadline 超时而不是计算量爆炸。调试类似问题时，**对着"奇怪的整数时长"回头查代码里的等待上限**是一个有效快捷方式。
+3. precompute 和 pipeline 应该是两个解耦的任务系统。代码里分两个 ThreadPoolExecutor 是对的，但 helper 函数混在一起就没起到隔离作用。以后如果要做类似并发架构，helper 函数的命名要严格反映其副作用边界。
+
+---
+
+## [BUG-024] GameSession MCTS 搜索在真实状态上跑，应隔离为 AI view
+
+**状态**：已修复（架构重构）
+**文件**：`bindings/py_engine.cpp` GameSessionWrapper
+**严重程度**：严重（BUG-023 的根因）
+**关联**：BUG-023 是这个根因在 Love Letter 上的具体表现
+
+### 问题描述
+
+发现 BUG-023 后用户追问："那之前训练的时候自博弈也有这个问题吗"、"本质上模拟游戏的地方和你跑 AI 的地方根本不在一起"。深挖发现：
+
+- **AI API 路径**（`test_ai_api_separation` 覆盖的那条）和 **GameSession 路径**（web / selfplay 用的）**共享同一份 MCTS 代码**（`NetMcts::search_root`）和同一个 `GameSessionWrapper`
+- 所谓"API 模式隔离"其实没有物理隔离 —— `bundle_->state` 在两种模式下都持有完整的隐藏字段。API 模式之所以"看起来没 bug"只是因为 seed 生成的 `bundle_->state` 里对手的隐藏字段是"任意合法占位"，对 AI 而言是无信号的随机值；而 GameSession 模式下那里装的是真相
+- MCTS `search_root(*bundle_->state, ...)` 直接在真相状态上展开。rules.apply 读 `d.hand[opp]`、`d.reserved[opp][i]` 等隐藏字段时拿到的是真实值
+- NoPeek 是事后挡板，依赖 nonce 变化判断"这条边需要随机化"。任何走不到 nonce 变化路径的动作（BUG-023 的 terminal-by-elimination、Splendor 的 BuyReserved 不抽新牌、等等）都是潜在漏点
+- 每出现一个同类 bug 修一次是打地鼠，根本做法是 **MCTS 搜索用的状态必须和游戏真相是两个对象**
+
+### 修复（最终架构：ISMCTS-A Method 1 + 2b）
+
+经过迭代收敛到下面这套。关键认知来自用户反复质询："搜索能看见真相本身就是越界"、"对手不同隐藏牌合法集不一样你怎么办"、"对手采样进 UCB 的 prior 是第一次到达决定的吗"。
+
+**第一层——ai_view 架构隔离**（GameSessionWrapper 内）：
+
+```cpp
+std::unique_ptr<IGameState> bundle_->state;                      // 真相
+std::vector<std::unique_ptr<IGameState>> ai_views_;              // 每个视角一份 AI view
+std::vector<std::unique_ptr<IBeliefTracker>> ai_trackers_;
+std::vector<std::unique_ptr<IFeatureEncoder>> ai_encoders_;
+std::vector<std::unique_ptr<OnnxPolicyValueEvaluator>> ai_evaluators_;
+```
+
+- 构造时：对每个 perspective p 从真相克隆后走 `initial_observation_extractor`/`applier` 把观察者不该看到的字段掩成占位。其他 per-perspective 对象从 fresh bundle 偷 unique_ptr（不改变堆地址，encoder 内部 raw ptr 照旧有效）
+- `apply_action`：真相侧推进；同时对每个 perspective 经 `public_event_extractor(truth_before, action, truth_after, p)` 提取观察事件，按 `pre → action → post` 顺序在 ai_view 上回放
+
+**第二层——ISMCTS-A 搜索**（`engine/search/net_mcts.cpp`）：
+
+- 每次 simulation 起点：`sim_state = clone(ai_view); randomize_unseen(sim_state, per_sim_rng)`——从 belief 采一个具体世界
+- 搜索过程中 `rules.apply(sim_state, action)` 严格按规则结算，读隐藏字段时读的是**这次 sim 采样的值**。**不跳过、不 chance-random-pick**
+- 节点首次扩展时请求网络对全 action space 输出 prior，UCB 用 per-sim `legal_actions(sim_state)` 过滤；不同 world 的 legal 集不同是被这个过滤吸收的
+- Prior floor `0.01/|A|`：防止"首次访问那个 world 下不合法"的动作 prior 被压到 0，保证后续 sim 里一旦合法了仍有机会被探索
+- Paranoid `validate_action` 断言：过滤失败时崩溃而不是 silent apply
+
+**第三层——Observer-hash 树共享**（`IGameState::state_hash_observer(perspective)`）：
+
+新增虚方法，返回"观察者视角下 information set"的 hash（排除观察者看不见的隐藏字段）。MCTS 用它做树节点键 + `chance_children` 分流。效果：不同采样世界的对手节点共享一个 tree node，Q/N 跨世界聚合，避免树按采样世界分裂导致有效搜索深度稀释。Love Letter 和 Splendor 各自覆盖实现。
+
+**三条路径统一到 ISMCTS-A**：
+- `GameSessionWrapper::get_ai_action`（web / 实时）
+- `run_selfplay_episode_py` → `selfplay_runner`（训练数据生成）
+- `run_arena_match_py` → `arena_runner`（eval / model 对比）
+
+都在 `NetMctsConfig` 里塞 `root_belief_tracker` + `root_observer_perspective` + `full_action_space`。旧的 NoPeek `traversal_limiter` 在 ISMCTS-A 路径下置 nullptr（不删除，给没 belief_tracker 的纯物理随机游戏留着）。
+
+**API 模式兼容**：`external_obs_mode_` flag，`apply_initial_observation` / `apply_observation` / `apply_event` 会翻 true。外部调用方通过事件协议驱动 `bundle_->state`，此模式下 bundle_->state 就是 AI view，MCTS 走老路径（测试用）
+
+同时 **revert 了 BUG-023 的 loveletter nonce bump**。新架构让那个补丁变成无用代码——即使规则里的 `apply()` 读了 `d.hand[target]`，读的也是 `ai_views_[p]` 里的占位值而不是真相。BUG-023 的黑盒测试（Guard 命中率 ~14% 而不是 76%）依然通过。
+
+### 连带好处
+
+1. **彻底解决一整类 bug**：Love Letter Guard/Baron/King/Prince、Splendor BuyReserved（包括 `legal_actions` 读隐藏字段的泄漏）、以及任何未来"读隐藏字段但不消耗 RNG"的动作都被架构层拦住。开发者不再需要在游戏的 rules 里做 defensive 的 `++nonce`
+2. **selfplay 训练一并修复**：selfplay 也走 `GameSessionWrapper`（via `run_selfplay_episode_py` → `GameSessionWrapper` 指导 search），同样受益。之前污染的 Love Letter 训练数据建议重训一次得到干净模型
+3. **web UI 的 "AI 只看到该看到的" 成为架构保证**：物理层面 MCTS 拿不到 `bundle_->state` pointer
+4. **未来 Coup 的 bluff-biased 采样直接插在 `init_ai_views_` 的 `randomize_unseen` 钩子上**，与框架一致，不需要专门路径
+
+### 回归测试
+
+**统计层**：`tests/test_hidden_info_coup_loveletter.py::TestLoveLetterGuardAccuracy::test_guard_accuracy_not_better_than_bounded_inference`——跑 60 局 vs 随机对手，无先验信息时 Guard 命中率必须 < 40%。BUG-023 时是 76%，当前架构下是 ~20%，留 2 倍以上 headroom。
+
+**不变性层**：`tests/test_api_mcts_policy_invariance.py::test_api_mcts_policy_matches_selfplay`——直击"selfplay 猛如虎 / API 变弱"的信息泄漏病症。流程：
+1. 用 seed_gt 跑 selfplay，记录观察历史 + 每个 ply 的 MCTS visit distribution（在 GameSession 真相驱动路径下计算）
+2. 用 seed_api（不同）起 API 会话，replay 同一观察历史
+3. 在 perspective 行动的 ply 上对比两条路径各自 `get_ai_action` 的 argmax：要求偏差率 ≤ 40%（MCTS tie-breaking RNG 下是可容忍噪声；真正的泄漏会让一条路径系统性选"凑巧好"的动作）
+
+两测合起来：统计层抓"作弊具体症状"（Guard 命中率），不变性层抓"两条路径是否真的走同一个信息"。
+
+### 性能成本
+
+每个 session 多持有 N 个 `IGameState` 克隆 + N 个 tracker + N 个 encoder + N 个 evaluator（N = 玩家数，2–4）。ONNX 模型 N 倍显存（对当前 1-2MB 级别的小模型可接受）。每次 `apply_action` 多做 N 次事件提取+应用。Love Letter / Splendor 级别游戏未观察到明显性能影响。如果未来上大模型或者玩家数更多，可以考虑共享 evaluator 但 per-perspective 切换 encoder。
+
+### 教训
+
+1. **测试通过 ≠ 架构正确**：三层测试（API 契约 / belief 等价 / encoder 不泄漏）都是必要条件，不是充分条件。MCTS 实际搜索用的状态是不是隔离的，需要单独的黑盒测试覆盖（见 `TestLoveLetterGuardAccuracy`）。
+2. **"现有 API 模式测试过了，让其他地方也用 API 模式的路径"不一定对**：本次第一版方案就是这么说的，但深挖发现 API 模式自己也没物理隔离，只是"对手字段是随机占位"的偶然掩盖。正确方案是直接在 `GameSessionWrapper` 层做物理隔离。
+3. **当用户反复让检测某个怀疑方向时，比起反复跑既有测试、应该主动设计一个能直接测量该怀疑的新测试**。BUG-023 本来如果更早写黑盒命中率测试，就不需要用户催五次。
+4. **架构层修复优先于补丁层修复**。BUG-023 单个修的话是 5 行 nonce bump，但一眼看上去不知道是不是还有同类 bug 漏。架构修完，一整类根本问题清零。
+
+---
+
+## [BUG-023] Love Letter AI 永远猜对 Guard — terminal-by-elimination 漏过 NoPeek 检测
+
+**分类**：游戏层（Love Letter）— 只在 ISMCTS-v1 / NoPeek 架构下成立，**ISMCTS-v2 重构后不再可能**（root 采样不依赖 rng_nonce 触发）。保留作为"游戏规则中隐藏-信息-依赖动作要触发随机化"的历史教训
+**状态**：已修复（后被 ISMCTS-v2 整体架构替代）
+**文件**：`games/loveletter/loveletter_rules.cpp`
+**严重程度**：严重 — AI 对隐藏信息游戏直接读取真实状态决策，相当于作弊
+
+### 问题描述
+
+用户实测发现 Love Letter AI 打 Guard 时命中率异常高（后经量化：无 Priest/Baron 先验的情况下命中率 76%，随机基线 14.3%）。既有两层 AI API 分离测试（`test_ai_api_separation` 和 `test_api_belief_matches_selfplay`）全部通过，说明 API 契约层面没有泄漏；feature encoder 直检也确认不经由特征通道泄漏对手手牌。
+
+### 根因
+
+问题在 **NoPeek traversal limiter 的激活条件**。框架用"rng_nonce 是否改变"判定 stochastic 转移（`default_stochastic_detector`），只有跨越 stochastic 边界时才 `randomize_unseen` + 重新应用动作。
+
+但 Love Letter 的 Guard 正确猜中→对手淘汰→`advance_turn` 开头 `check_end_game` 发现 2p 终局→直接 return，**不抽牌**→`draw_nonce` 不变→stochastic_detector 返回 false→NoPeek 不触发→MCTS 看到的 child 是用**真实手牌**算出来的终局 win 结果（Q=1.0）。
+
+对比猜错分支：对手不死→`advance_turn` 抽牌→nonce 变→NoPeek 正常触发→随机化后重算 Guard→有一定概率命中→Q ≈ 1/7。
+
+结果：MCTS 把"猜中对应的 guess"这条分支估得 Q=1.0，其他 guess 都是 ~0.14。AI 每次都精确选中真实手牌那一个 guess。本质上 MCTS 偷看了一次真实状态来做局部决策。
+
+同类问题存在于 Baron（比大小直接淘汰到终局）、Prince（牌堆空了 draw 不到会不抽，此时无 nonce 变化）、King（交换手牌无 draw）。Priest 不受影响——其效果是 `hand_exposed[target]=1`，并不依赖隐藏信息做分支。
+
+### 修复
+
+`loveletter_rules.cpp::do_action_fast` 在 switch 之后、`advance_turn` 之前，对 Guard/Baron/Prince/King 无条件 `++d.draw_nonce`。这样任何读取过隐藏手牌的动作都会产生 nonce 变化，NoPeek 正常触发并随机化对手手牌。
+
+修复前后实测（2p，80 盘，AI=player0，对手随机）：
+
+| 指标 | 修复前 | 修复后 | 基线 |
+|------|--------|--------|------|
+| Guard 无先验命中率 | 76.0% | 14.0% | 14.3% |
+| tracker 有先验时的命中率 | ~100% | ~100% | — |
+
+修复后命中率严格匹配 1/7 基线；有 Priest/Baron 先验时仍然 100% 命中（合法使用公开信息）。
+
+### 教训
+
+1. **nonce-based stochastic detector 的语义是"存在 RNG 消耗"，而我们真正需要的语义是"转移结果依赖观察者不知道的信息"**。这两者大多数时候等价（draw 是最常见的隐藏消耗），但在 terminal-by-elimination 或 deck-empty 的边界上不等价。此类游戏中所有"读隐藏手牌"的动作都需要显式 nonce 增量。
+2. **两层 API 分离测试不能抓这类 bug**。现有测试覆盖"API 契约是否携带隐藏字段"和"observation-only belief 是否等价于 selfplay belief"，但不覆盖 "MCTS 在 GameSession 路径下实际搜索的世界是否真的用了 belief 而不是 true state"。修复后应补一个"AI 决策不应显著优于无先验基线"的统计测试。
+3. **用户主观"AI 太强"的反馈在隐藏信息游戏里永远是硬信号**，要优先怀疑泄漏，不要先辩护"也许是合理推断"。本次排查先假设是合理的 Priest 先验推断（对 AI 有利的解释），险些漏掉 bug；直到跑量化检查才暴露。
+4. **新游戏接入 Checklist 里应加一条**：对隐藏信息读取型动作（Guard/Baron/King 类），确认 nonce 会在应用时变化。在 `docs/NEW_GAME_TEST_GUIDE.md` 里加一个对应测试模板。
+5. 现有 Coup 暂停开发的理由（诈唬核心游戏 uniform-sampling ISMCTS 不适用）是更抽象的 bias 问题；本 bug 是具体实现问题。两者都属于 ISMCTS 采样逻辑的潜在坑，开发隐藏信息游戏时都要盯。
+
+---
+
+## [BUG-025] pipeline.py `nopeek_enabled` off-by-one：peek_steps=0 被错误解读为"第 0 步 peek"
+
+**分类**：框架层
+**状态**：已修复
+**文件**：`training/pipeline.py:439`
+**严重程度**：高 — peek 模式在 ISMCTS-v2 下让 MCTS 在 truth 上搜索，破坏 DAG hash 的 info-set 语义；训练第一步直接崩
+
+### 问题描述
+
+peek_steps 字段语义：**前 N 步训练用 peek（MCTS 看真相），之后切回 ISMCTS**。默认 0 表示始终 ISMCTS。
+
+pipeline.py 里原来写的：
+
+```python
+"nopeek_enabled": step > peek_steps,
+```
+
+当 `peek_steps=0, step=0`（训练第一步）时，`0 > 0 = False` → `nopeek_enabled=False` → peek 模式被**意外开启**。意思变成了"前 1 步用 peek"。
+
+### 根因
+
+off-by-one：`step > N` 表达的是 "step 不在前 N+1 个里面"，但 "前 N 步" 的正确判定是 `step < N`，取反（不在前 N 步 → ISMCTS 开启）就是 `step >= N`。
+
+### 修复
+
+```python
+"nopeek_enabled": step >= peek_steps,
+```
+
+加了注释说明 off-by-one caveat。
+
+### 教训
+
+"前 N 步做某事" 这类表达翻译成代码时要显式写 `step < N`，不要用 `step > N-1` 之类的等价变形——容易和边界对不上。测试应该覆盖 `peek_steps=0`（完全不 peek）的 case：训练第 0 步 nopeek_enabled 必须为 True。
+
+---
+
+## [BUG-026] ISMCTS-v2 DAG hash collision → MCTS 选中非法 action 崩溃
+
+**分类**：框架层
+**状态**：已兜底修复（真正的 Hasher 强化是未来工作）
+**文件**：`engine/search/net_mcts.cpp::search_root`
+**严重程度**：高 — 启用 Dirichlet 噪声的隐藏信息游戏训练中概率触发（Love Letter 2p 训练第 5 步就挂）
+
+### 问题描述
+
+ISMCTS-v2 用 DAG 节点共享：同一 `state_hash_for_perspective(current_player)` 的 sims 复用同一节点的 edges（UCB 统计在该节点聚合）。训练中偶尔报：
+
+```
+MCTS: selected action failed validate_action — node/state inconsistency
+```
+
+诊断 dump 显示：
+
+```
+Node edges=[46(Princess), 32(Baron-self)]
+Current legal_actions=[45(Countess)]
+```
+
+两个 sim 都到达这个 DAG 节点，但 sim_state 的 (hand, drawn_card) 不同：
+- 第一个 sim：手牌是 `(Princess, Baron)` 或 `(Baron, Princess)` 且全部 opp protected → legal 包含 Princess 和 Baron-self（fallback 自选）。Expansion 按这套 legal 建边
+- 第二个 sim：手牌是 `(Countess, King)` → must_countess 强制 → legal 只剩 Countess
+
+两套 state 在 `Hasher::combine`（XOR + shift）下**产生了相同 hash**。DAG 复用了第一个 sim 的 edges。UCB 选中 Princess → 在第二个 sim 的 state 上非法 → 崩。
+
+### 根因
+
+`Hasher::combine(uint64_t v)`：`seed_ ^= v + kGoldenRatio64 + (seed_ << 6) + (seed_ >> 2)`。64 位空间下理论上可碰撞；Love Letter 私有字段组合（hand × drawn_card = 约 64 种）和公共字段某些序列相乘，碰撞概率非零。Dirichlet 噪声让 sims 探索更多分支，放大了碰撞触发概率——关噪声 + greedy 选择时观察不到。
+
+### 修复（兜底）
+
+把硬 `throw` 改成**重新选边**：
+
+```cpp
+if (!rules.validate_action(*sim_state, chosen_action)) {
+  auto legal = rules.legal_actions(*sim_state);
+  std::unordered_set<ActionId> legal_set(legal.begin(), legal.end());
+  // Re-pick best UCB edge restricted to currently-legal actions.
+  int fallback = -1; float fb_score = -inf;
+  for (each edge) if (legal_set.count(edge.action)) {
+    float s = q + u; if (s > fb_score) fallback = i;
+  }
+  if (fallback < 0) {
+    // Zero overlap — terminate this simulation at leaf with value estimate.
+    break;
+  }
+  best_edge = fallback;
+}
+```
+
+兜底**不影响 correctness**：碰撞时 stale edges 只是这一次 sim 被忽略，visit 统计和 value 更新都在真正合法的动作上。UCT2 的 DAG 共享即使在碰撞下仍然渐进正确。
+
+### 真正的 root-cause fix（未做，未来 work）
+
+强化 `Hasher` 抗碰撞：
+- 选项 A：`combine` 用更强的混合（如 xxhash 或 MurmurHash3 的 finalize 步骤）
+- 选项 B：`state_hash_for_perspective` 在 finalize 后做一轮额外 avalanche
+- 选项 C：用 128-bit hash 拼接，节点 key 用 pair
+
+当前兜底的 cost：每次碰撞多一次 legal_actions 调用（O(legal) 的小成本），碰撞率估计 < 0.01%，实战可忽略。
+
+### 教训
+
+- **DAG + hash 共享节点的搜索**永远要在 edge 传播前 validate，不能假设"hash 相同 → state 行为相同"。这是 ISMCTS-v2 设计的 invariant **要**然成立但**不能**假设 100% 无碰撞
+- 隐藏信息游戏 + Dirichlet 噪声是最容易暴露 hash collision 的组合，因为噪声扩大了搜索分支、不同 sim 走到同 info-set 的机会增多
+- 诊断要早一点写——第一次挂的时候信息几乎为零（`node/state inconsistency`），加 dump 之后立刻看明白是 edge set vs legal set 不匹配
+
+### 剩余未做
+
+- `tests/test_dag_hash_collision.py`：构造已知碰撞的状态对（如果能找到）断言 fallback 路径触发且 MCTS 正常完成
+- Hasher 升级到 128-bit 或更强混合
+
+---
+
+> 历史上这里列有 DESIGN-001..DESIGN-004 四条"设计取舍"（tail solve margin_weight、selfplay 必走 C++、web 平台禁全局锁做重计算、gating 模型管理）。这些已成为项目长期原则，统一记录在 `CLAUDE.md` 里，不再在 KNOWN_ISSUES 中重复。本文件聚焦"踩过的坑"而非"一直遵循的原则"。

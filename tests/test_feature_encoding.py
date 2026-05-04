@@ -36,24 +36,37 @@ def test_selfplay_features_differ_from_initial_position(game_id, game_config):
     )
 
 
+# Some games (Love Letter 2p under uniform-random heuristic) can terminate
+# in a single ply (e.g. Princess discard, Guard guess hits). Try a small
+# set of seeds so we reliably get an episode long enough to compare plies.
+_HEURISTIC_SEED_CANDIDATES = [42, 77, 100, 13, 2024, 999]
+
+
+def _first_heuristic_episode_with_min_samples(game_id: str, min_samples: int):
+    for seed in _HEURISTIC_SEED_CANDIDATES:
+        ep = run_short_heuristic(game_id, seed=seed)
+        if len(ep["samples"]) >= min_samples:
+            return seed, ep
+    pytest.fail(
+        f"{game_id}: could not find a seed in {_HEURISTIC_SEED_CANDIDATES} "
+        f"producing ≥{min_samples} heuristic episode samples — game may be "
+        f"terminating too quickly under uniform-random heuristic"
+    )
+
+
 @pytest.mark.parametrize("game_id", GAMES_WITH_HEURISTIC)
 def test_heuristic_features_vary_across_plies(game_id):
-    ep = run_short_heuristic(game_id)
+    _seed, ep = _first_heuristic_episode_with_min_samples(game_id, min_samples=3)
     samples = ep["samples"]
-    if len(samples) < 3:
-        pytest.skip("episode too short")
     assert samples[0]["features"] != samples[2]["features"]
 
 
 @pytest.mark.parametrize("game_id", GAMES_WITH_HEURISTIC)
 def test_heuristic_features_differ_from_initial(game_id):
-    seed = 42
+    seed, ep = _first_heuristic_episode_with_min_samples(game_id, min_samples=3)
     initial = dinoboard_engine.encode_state(game_id, seed)["features"]
-    ep = run_short_heuristic(game_id, seed=seed)
     samples = ep["samples"]
     mid_ply = min(4, len(samples) - 1)
-    if mid_ply < 2:
-        pytest.skip("episode too short")
     assert samples[mid_ply]["features"] != initial
 
 

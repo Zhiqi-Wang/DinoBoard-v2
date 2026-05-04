@@ -47,6 +47,7 @@ std::vector<ActionId> TicTacToeRules::legal_actions(const IGameState& state) con
 
 UndoToken TicTacToeRules::do_action_fast(IGameState& state, ActionId action) const {
   TicTacToeState* s = &checked_cast<TicTacToeState>(state);
+  s->begin_step();  // framework step counter for DAG acyclicity
   UndoToken token{};
   token.undo_depth = static_cast<std::uint32_t>(s->undo_stack.size());
 
@@ -93,6 +94,7 @@ void TicTacToeRules::undo_action(IGameState& state, const UndoToken& token) cons
   s->terminal = rec.prev_terminal;
   s->move_count = rec.prev_move_count;
   s->scores = rec.prev_scores;
+  s->end_step();  // framework step counter rollback
   (void)token;
 }
 

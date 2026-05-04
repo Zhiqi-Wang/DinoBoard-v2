@@ -136,13 +136,14 @@ struct SplendorState final : public CloneableState<SplendorState<NPlayers>> {
   void reset_with_seed(std::uint64_t seed) override;
 
   StateHash64 state_hash(bool include_hidden_rng) const override;
+  void hash_public_fields(Hasher& h) const override;
+  void hash_private_fields(int player, Hasher& h) const override;
   int current_player() const override;
   int first_player() const override;
   bool is_terminal() const override;
   bool is_turn_start() const override;
   int num_players() const override { return Cfg::kPlayers; }
   int winner() const override;
-  std::uint64_t rng_nonce() const override;
 };
 
 const std::vector<SplendorCard>& splendor_card_pool();

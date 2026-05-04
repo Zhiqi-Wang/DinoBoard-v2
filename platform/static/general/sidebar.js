@@ -1,5 +1,19 @@
 import { apiGet } from './api.js';
 
+const SHOW_REPLAY_KEY = 'dinoboard.showReplayPanelAlways';
+
+function loadShowReplayAlways() {
+  try {
+    const v = localStorage.getItem(SHOW_REPLAY_KEY);
+    // Default: true (don't hide). Only respect an explicit "0" opt-out.
+    return v === null ? true : v !== '0';
+  } catch (e) { return true; }
+}
+
+function saveShowReplayAlways(flag) {
+  try { localStorage.setItem(SHOW_REPLAY_KEY, flag ? '1' : '0'); } catch (e) {}
+}
+
 export function createSidebar(sidebarEl, config, callbacks) {
   const difficulties = config.difficulties || ['heuristic', 'casual', 'expert'];
   const defaultDiff = config.defaultDifficulty || 'expert';
@@ -48,6 +62,10 @@ export function createSidebar(sidebarEl, config, callbacks) {
       <button id="btn-hint">智能提示</button>
       <button id="btn-load-replay">加载录像</button>
       <input type="file" id="replay-file-input" accept=".json" style="display:none">
+      <label class="side-toggle">
+        <input type="checkbox" id="toggle-show-replay">
+        <span>对局中显示录像栏</span>
+      </label>
       <div id="ops-msg" class="muted"></div>
     </div>
   `;
@@ -152,13 +170,49 @@ export function createSidebar(sidebarEl, config, callbacks) {
 
   loadGameSwitcher(sidebarEl.querySelector('#game-selector'), config.gameId);
 
+  const showReplayToggle = sidebarEl.querySelector('#toggle-show-replay');
+  // Handler is registered after sidebar creation via onShowReplayToggle()
+  // — the app needs access to `replay` (created after the sidebar) when
+  // the checkbox changes. Store it in a mutable slot instead of reading
+  // it from callbacks at fire time.
+  let showReplayHandler = null;
+  if (showReplayToggle) {
+    showReplayToggle.checked = loadShowReplayAlways();
+    showReplayToggle.addEventListener('change', () => {
+      saveShowReplayAlways(showReplayToggle.checked);
+      if (showReplayHandler) showReplayHandler(showReplayToggle.checked);
+    });
+  }
+
+  // Enable / disable the operate-during-human-turn buttons. Called by the
+  // app whenever the game state changes — AI thinking, AI's turn, busy,
+  // replay mode, terminal — all of these should lock out undo / force /
+  // hint to avoid mid-think races and weird intermediate states.
+  function setHumanCanAct(canAct) {
+    const btnUndo = sidebarEl.querySelector('#btn-undo');
+    const btnHint = sidebarEl.querySelector('#btn-hint');
+    if (btnUndo) btnUndo.disabled = !canAct;
+    if (btnHint) btnHint.disabled = !canAct;
+    sidebarEl
+      .querySelectorAll('#force-section button')
+      .forEach(b => { b.disabled = !canAct; });
+  }
+
+  // Start disabled — no game running yet.
+  setHumanCanAct(false);
+
   return {
     setStartMsg(text) { sidebarEl.querySelector('#start-msg').textContent = text; },
     setOpsMsg(text) { sidebarEl.querySelector('#ops-msg').textContent = text; },
     getSideMode() { return sideMode; },
     getDifficulty() { return difficulty; },
     getNumPlayers() { return numPlayers; },
+    getShowReplayAlways() {
+      return showReplayToggle ? showReplayToggle.checked : loadShowReplayAlways();
+    },
+    onShowReplayToggle(fn) { showReplayHandler = fn; },
     rebuildForceButtons,
+    setHumanCanAct,
   };
 }
 

@@ -33,9 +33,14 @@ export function createPipelinePoller() {
           }
           const data = await apiGet(API_BASE + '/' + sessionId);
           if (cancelled) { polling = false; return; }
+          // The C++ NetMctsStats field is best_action_value, but the
+          // pybind export renames it to best_value (see py_engine.cpp
+          // sample dict keys). Don't use the C++ field name here — same
+          // trap bit us in pipeline.py (BUG-020). Always key off the
+          // Python-side name.
           let aiWinrate = null;
-          if (st.ai_stats && st.ai_stats.best_action_value !== undefined) {
-            aiWinrate = (st.ai_stats.best_action_value + 1) / 2;
+          if (st.ai_stats && st.ai_stats.best_value !== undefined) {
+            aiWinrate = (st.ai_stats.best_value + 1) / 2;
           }
           polling = false;
           if (callbacks.onDone) callbacks.onDone(data, aiWinrate, st);

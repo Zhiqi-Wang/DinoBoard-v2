@@ -59,17 +59,42 @@ GAME_CONFIGS = load_game_configs()
 WEB_CONFIGS = load_web_configs()
 
 
+def _base_game_id(game_id: str) -> str:
+    """Return the base game (stripping a trailing _<N>p variant suffix).
+
+    Examples: 'azul' → 'azul', 'azul_3p' → 'azul', 'splendor_2p' → 'splendor'.
+    """
+    import re
+    return re.sub(r"_\d+p$", "", game_id)
+
+
 def find_model_path(game_id: str) -> str:
     """Return the path to the game's deployed model, or "" if none exists.
 
-    Accepts both 'model_best.onnx' (matches training output in runs/<name>/models/)
-    and legacy 'best_model.onnx' so users can drop either filename in place.
+    Convention: games/<base>/model/<variant>.onnx, where <variant> is the
+    game_id (e.g. azul_2p.onnx, azul_3p.onnx). All variants of a game live
+    in the same model directory — no separate games/<name>_3p/ subdirs.
+
+    The base 2p game_id also maps to its explicit '<game>_2p.onnx' file
+    — callers pass either the bare base id ('azul') or the explicit
+    variant id ('azul_2p') and get the same file.
     """
-    model_dir = PROJECT_ROOT / "games" / game_id / "model"
-    for name in ("model_best.onnx", "best_model.onnx"):
-        candidate = model_dir / name
-        if candidate.exists():
-            return str(candidate)
+    base = _base_game_id(game_id)
+    model_dir = PROJECT_ROOT / "games" / base / "model"
+
+    # Primary: <variant>.onnx (e.g. azul_3p.onnx). If game_id is already
+    # the base form, treat it as the 2p variant.
+    variant_name = game_id if game_id != base else f"{base}_2p"
+    candidate = model_dir / f"{variant_name}.onnx"
+    if candidate.exists():
+        return str(candidate)
+
+    # Also try the bare variant form in case the caller passed 'azul_2p'
+    # but we only got 'azul.onnx' on disk. Harmless if nothing matches.
+    alt = model_dir / f"{game_id}.onnx"
+    if alt.exists():
+        return str(alt)
+
     return ""
 
 
@@ -120,21 +145,13 @@ def create_session(
     model_path = ""
     if preset["use_model"]:
         model_path = find_model_path(actual_id)
-        if not model_path and actual_id != game_id:
-            base_model = find_model_path(game_id)
-            if base_model:
-                meta_actual = engine.game_metadata(actual_id)
-                meta_base = engine.game_metadata(game_id)
-                if meta_actual["feature_dim"] == meta_base["feature_dim"] and \
-                        meta_actual["action_space"] == meta_base["action_space"] and \
-                        meta_actual["num_players"] == meta_base["num_players"]:
-                    model_path = base_model
         if not model_path:
+            base = _base_game_id(actual_id)
             raise FileNotFoundError(
                 f"no trained model found for {actual_id}. "
-                f"Expected at games/{actual_id}/model/model_best.onnx "
-                f"(or legacy best_model.onnx). "
-                f"Copy from runs/<run_name>/models/model_best.onnx after training."
+                f"Expected at games/{base}/model/{actual_id}.onnx. "
+                f"Copy from runs/<run_name>/models/model_best.onnx after training, "
+                f"renaming to <variant>.onnx."
             )
 
     gs = engine.GameSession(actual_id, seed, model_path, False)

@@ -17,11 +17,18 @@ import pytest
 
 from conftest import get_test_model
 
+# Coup is temporarily disabled (see docs/GAME_FEATURES_OVERVIEW.md "Future Work：
+# 概率化 Belief Tracking") pending the probabilistic belief network. Skip coup-
+# specific tests until it re-lands.
+_coup_disabled = "coup" not in dinoboard_engine.available_games()
+_skip_coup = pytest.mark.skipif(_coup_disabled, reason="coup is disabled")
+
 
 # ---------------------------------------------------------------------------
 # Core invariant: randomize_unseen must NOT reproduce the true hidden state
 # ---------------------------------------------------------------------------
 
+@_skip_coup
 class TestCoupRandomizeUnseen:
     """Coup belief tracker: randomize_unseen shuffles opponent cards + deck."""
 
@@ -103,6 +110,7 @@ class TestLoveLetterRandomizeUnseen:
 # Encoder information barrier: features must not leak hidden state
 # ---------------------------------------------------------------------------
 
+@_skip_coup
 class TestCoupEncoderInfoBarrier:
     """Verify that Coup encoder features for opponents contain no hidden info."""
 
@@ -147,64 +155,55 @@ class TestCoupEncoderInfoBarrier:
 
 
 class TestLoveLetterEncoderInfoBarrier:
-    """Verify that Love Letter encoder features for opponents hide their hand."""
+    """Verify that Love Letter encoder features for opponents hide their hand.
+
+    Post-Phase-6 layout (2p, total 70):
+      Public section (38):
+        [0-12]  player 0 public (13): alive, protected, cp, exposed,
+                 discard counts(8), discard size
+        [13-25] player 1 public (13)
+        [26-37] global (12): deck, ply, first_player, alive_count, face_up(8)
+      Private section (32):
+        [38-45] player 0 hand one-hot (8)
+        [46-53] player 0 drawn_card one-hot (8)
+        [54-61] player 1 hand one-hot (8) — zero for opp w/o tracker info
+        [62-69] player 1 drawn_card one-hot (8) — always zero for opp
+    """
+
+    PRIVATE_OFFSET = 38  # end of public section
+    PER_PLAYER_PRIVATE = 16  # hand(8) + drawn(8)
 
     def test_opponent_hand_block_all_zeros_at_start(self):
-        """At game start, before any Priest/Baron reveals, opponent hand
-        features must be all-zero (we don't know their card).
-
-        Feature layout per player (28 features for 2p):
-          [0] alive
-          [1] protected
-          [2] is_current
-          [3] hand_exposed
-          [4-11] visible_hand (8, one per card type 1-8) ← this block
-          [12-19] drawn_card (8, one per card type)
-          [20-27] discard_pile_ratios (8) + discard_count
-        """
-        visible_hand_offset = 4
-        visible_hand_size = 8
-        features_per_player = 28
-
+        """Opponent hand features in private section must be all-zero at game
+        start (tracker has no knowledge yet)."""
         for seed in range(10):
             enc = dinoboard_engine.encode_state("loveletter", seed=seed)
             f = enc["features"]
-            opp_start = features_per_player
-            opp_hand = f[
-                opp_start + visible_hand_offset :
-                opp_start + visible_hand_offset + visible_hand_size
-            ]
+            opp_hand_start = self.PRIVATE_OFFSET + self.PER_PLAYER_PRIVATE
+            opp_hand = f[opp_hand_start : opp_hand_start + 8]
             assert all(v == 0.0 for v in opp_hand), (
-                f"Seed {seed}: opponent visible_hand = {opp_hand}, should be all zeros"
+                f"Seed {seed}: opponent hand = {opp_hand}, should be all zeros"
             )
 
     def test_self_hand_is_nonzero_at_start(self):
-        """At game start, player 0's visible_hand should have exactly one 1.0."""
-        visible_hand_offset = 4
-        visible_hand_size = 8
-
+        """Self hand one-hot should have exactly one 1.0 at start."""
         for seed in range(10):
             enc = dinoboard_engine.encode_state("loveletter", seed=seed)
             f = enc["features"]
-            self_hand = f[visible_hand_offset : visible_hand_offset + visible_hand_size]
+            self_hand = f[self.PRIVATE_OFFSET : self.PRIVATE_OFFSET + 8]
             nonzero = [i for i, v in enumerate(self_hand) if v > 0]
             assert len(nonzero) == 1, (
                 f"Seed {seed}: self hand should have exactly 1 card, got {nonzero}"
             )
 
     def test_drawn_card_zero_for_opponent(self):
-        """Opponent's drawn_card should always be zero (we can't see it)."""
-        drawn_offset = 12
-        drawn_size = 8
-        features_per_player = 28
-
+        """Opponent drawn_card in private section must be all zero."""
         for seed in range(10):
             enc = dinoboard_engine.encode_state("loveletter", seed=seed)
             f = enc["features"]
-            opp_drawn = f[
-                features_per_player + drawn_offset :
-                features_per_player + drawn_offset + drawn_size
-            ]
+            # player 1 drawn_card = private start + per_player + 8 (after hand)
+            opp_drawn_start = self.PRIVATE_OFFSET + self.PER_PLAYER_PRIVATE + 8
+            opp_drawn = f[opp_drawn_start : opp_drawn_start + 8]
             assert all(v == 0.0 for v in opp_drawn), (
                 f"Seed {seed}: opponent drawn_card = {opp_drawn}, should be all zeros"
             )
@@ -244,64 +243,45 @@ class TestLoveLetterTrackerKnownHand:
             simulations=100, max_game_plies=20,
         )
         assert ep["total_plies"] > 0
-        assert ep["traversal_stops"] > 0
 
 
 # ---------------------------------------------------------------------------
 # Cross-game: MCTS search never uses true hidden state directly
+#
+# ISMCTS-v2: hidden-info games route through root sampling (per-sim
+# `randomize_unseen` + per-acting-player DAG keying). The "MCTS doesn't use
+# true hidden state" invariant is verified by TestLoveLetterGuardAccuracy
+# (tests/test_hidden_info_coup_loveletter.py): if MCTS read the true opp
+# hand, Guard accuracy would be >70%; it sits around 20% instead.
 # ---------------------------------------------------------------------------
 
-class TestMctsNoPeekInvariant:
-    """The MCTS search must use belief-sampled worlds, never the true state's
-    hidden fields. We verify this indirectly: if NoPeek is working, the
-    traversal limiter must fire (traversal_stops > 0) for hidden-info games,
-    and must NOT fire for complete-info games.
-    """
+class TestMctsHiddenInfoSelfplay:
 
-    @pytest.mark.parametrize("game_id", ["coup", "loveletter", "splendor"])
-    def test_hidden_info_games_have_traversal_stops(self, game_id):
+    @pytest.mark.parametrize("game_id", ["loveletter", "splendor"])
+    def test_hidden_info_selfplay_runs(self, game_id):
         model = get_test_model(game_id)
         ep = dinoboard_engine.run_selfplay_episode(
             game_id=game_id, seed=42, model_path=model,
             simulations=50, max_game_plies=40,
         )
-        assert ep["traversal_stops"] > 0, (
-            f"{game_id}: NoPeek traversal limiter never fired — "
-            "MCTS may be reading true hidden state"
-        )
+        assert ep["total_plies"] > 0
 
-    @pytest.mark.parametrize("game_id", ["tictactoe", "quoridor"])
-    def test_complete_info_games_no_traversal_stops(self, game_id):
-        model = get_test_model(game_id)
-        ep = dinoboard_engine.run_selfplay_episode(
-            game_id=game_id, seed=42, model_path=model,
-            simulations=50, max_game_plies=30,
-        )
-        assert ep["traversal_stops"] == 0, (
-            f"{game_id}: unexpected traversal stops in complete-info game"
-        )
-
-    @pytest.mark.parametrize("game_id", ["coup", "loveletter"])
-    def test_arena_traversal_stops(self, game_id):
+    @pytest.mark.parametrize("game_id", ["loveletter"])
+    def test_arena_runs(self, game_id):
         m = get_test_model(game_id)
         result = dinoboard_engine.run_arena_match(
             game_id=game_id, seed=42,
             model_paths=[m, m],
             simulations_list=[20, 20], temperature=0.0,
         )
-        assert result["traversal_stops"] > 0, (
-            f"{game_id}: NoPeek never fired in arena"
-        )
+        assert result["total_plies"] > 0
 
-    @pytest.mark.parametrize("game_id", ["coup", "loveletter"])
-    def test_game_session_ai_action_has_traversal_stops(self, game_id):
-        """GameSession.get_ai_action must also use NoPeek."""
+    @pytest.mark.parametrize("game_id", ["loveletter"])
+    def test_game_session_ai_action_runs(self, game_id):
         model = get_test_model(game_id)
         gs = dinoboard_engine.GameSession(game_id, seed=42, model_path=model)
         result = gs.get_ai_action(simulations=30, temperature=0.0)
-        assert result["stats"]["traversal_stops"] > 0, (
-            f"{game_id}: GameSession AI did not trigger NoPeek"
-        )
+        assert "action" in result
 
 
 # ---------------------------------------------------------------------------
@@ -310,26 +290,20 @@ class TestMctsNoPeekInvariant:
 
 class TestMultiplayerISMCTS:
 
-    @pytest.mark.parametrize("game_id", ["coup_3p", "loveletter_3p"])
-    def test_3p_selfplay_with_noPeek(self, game_id):
+    @pytest.mark.parametrize("game_id", ["loveletter_3p"])
+    def test_3p_selfplay_runs(self, game_id):
         model = get_test_model(game_id)
         ep = dinoboard_engine.run_selfplay_episode(
             game_id=game_id, seed=42, model_path=model,
             simulations=20, max_game_plies=40,
         )
         assert ep["total_plies"] > 0
-        assert ep["traversal_stops"] > 0, (
-            f"{game_id}: NoPeek never fired in 3-player game"
-        )
 
-    @pytest.mark.parametrize("game_id", ["coup_4p", "loveletter_4p"])
-    def test_4p_selfplay_with_noPeek(self, game_id):
+    @pytest.mark.parametrize("game_id", ["loveletter_4p"])
+    def test_4p_selfplay_runs(self, game_id):
         model = get_test_model(game_id)
         ep = dinoboard_engine.run_selfplay_episode(
             game_id=game_id, seed=42, model_path=model,
             simulations=20, max_game_plies=40,
         )
         assert ep["total_plies"] > 0
-        assert ep["traversal_stops"] > 0, (
-            f"{game_id}: NoPeek never fired in 4-player game"
-        )

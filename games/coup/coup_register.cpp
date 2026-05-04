@@ -134,6 +134,130 @@ board_ai::HeuristicResult heuristic_random(
   return result;
 }
 
+// Public-event extractor. The observer sees revealed cards in two cases:
+//   1. A player loses influence (revealed flips false -> true).
+//   2. A challenged claim is verified: claimer briefly shows the card, the
+//      card is shuffled back to deck, and a new one is drawn. `revealed`
+//      doesn't flip, but the role is publicly known.
+// We emit `card_revealed` in both cases so the belief tracker can null out
+// per-player role signals correctly.
+//
+// We also emit `exchange_complete` when an Ambassador exchange cycle
+// finishes, so the tracker can reset all of that player's signals.
+template <int NPlayers>
+PublicEventTrace extract_coup_events(
+    const IGameState& before,
+    ActionId action,
+    const IGameState& after,
+    int /*perspective*/) {
+  using namespace board_ai::coup;
+  const auto& sb = board_ai::checked_cast<CoupState<NPlayers>>(before);
+  const auto& sa = board_ai::checked_cast<CoupState<NPlayers>>(after);
+  const auto& db = sb.data;
+  const auto& da = sa.data;
+  PublicEventTrace out;
+
+  auto emit_reveal = [&](int player, int role) {
+    if (player < 0 || player >= NPlayers) return;
+    if (role < 0 || role >= kCharacterCount) return;
+    AnyMap payload;
+    payload["player"] = std::any(player);
+    payload["role"] = std::any(role);
+    out.post_events.push_back({"card_revealed", std::move(payload)});
+  };
+
+  // Case 1: any revealed flag flipped from false to true.
+  for (int p = 0; p < NPlayers; ++p) {
+    for (int sl = 0; sl < 2; ++sl) {
+      if (!db.revealed[p][sl] && da.revealed[p][sl]) {
+        emit_reveal(p, static_cast<int>(db.influence[p][sl]));
+      }
+    }
+  }
+
+  // Case 2: successful challenge reveal — stage kResolveChallengeAction /
+  // kResolveChallengeCounter with a RevealSlot action, the shown card
+  // matched the claim and was reshuffled away. Observable role:
+  // before.influence[revealer][slot].
+  if (action == kRevealSlot0 || action == kRevealSlot1) {
+    int slot = (action == kRevealSlot0) ? 0 : 1;
+    int revealer = -1;
+    if (db.stage == CoupStage::kResolveChallengeAction) {
+      revealer = db.active_player;
+    } else if (db.stage == CoupStage::kResolveChallengeCounter) {
+      revealer = db.blocker;
+    }
+    if (revealer >= 0 && revealer < NPlayers &&
+        !db.revealed[revealer][slot] && !da.revealed[revealer][slot]) {
+      // Success case: role shown publicly, card reshuffled.
+      emit_reveal(revealer, static_cast<int>(db.influence[revealer][slot]));
+    }
+  }
+
+  // Case 3: exchange cycle complete.
+  if (db.stage == CoupStage::kExchangeReturn2 &&
+      da.stage != CoupStage::kExchangeReturn1 &&
+      da.stage != CoupStage::kExchangeReturn2) {
+    AnyMap payload;
+    payload["player"] = std::any(db.active_player);
+    out.post_events.push_back({"exchange_complete", std::move(payload)});
+  }
+
+  return out;
+}
+
+// initial_observation for AI API: perspective sees their own starting hand.
+// Deck / opp hands are hidden and will be filled by randomize_unseen.
+template <int NPlayers>
+AnyMap extract_coup_initial_observation(const IGameState& state, int perspective) {
+  using namespace board_ai::coup;
+  const auto& s = board_ai::checked_cast<CoupState<NPlayers>>(state);
+  const auto& d = s.data;
+  AnyMap out;
+  if (perspective >= 0 && perspective < NPlayers) {
+    std::vector<int> my_hand;
+    for (int sl = 0; sl < 2; ++sl) {
+      my_hand.push_back(static_cast<int>(d.influence[perspective][sl]));
+    }
+    out["my_hand"] = std::any(my_hand);
+  }
+  out["num_players"] = std::any(NPlayers);
+  return out;
+}
+
+template <int NPlayers>
+void apply_coup_initial_observation(IGameState& state, int perspective, const AnyMap& obs) {
+  using namespace board_ai::coup;
+  auto& s = board_ai::checked_cast<CoupState<NPlayers>>(state);
+  auto& d = s.data;
+  if (perspective < 0 || perspective >= NPlayers) return;
+  auto it = obs.find("my_hand");
+  if (it == obs.end()) return;
+  auto my_hand = std::any_cast<std::vector<int>>(it->second);
+  for (int sl = 0; sl < 2 && sl < static_cast<int>(my_hand.size()); ++sl) {
+    d.influence[perspective][sl] = static_cast<CharId>(my_hand[sl]);
+  }
+}
+
+// apply_event stub: the AI session advances its own state via do_action_fast
+// in the non-deterministic world sampled by randomize_unseen, then applies
+// events to overwrite public facts. For Coup, randomize_unseen already
+// produces the right public state since revealed cards stay in state, and
+// the API needs no further event-side mutation for per-action fidelity.
+// We still need to supply a non-empty applier so the framework's event
+// pipeline is live — tracker receives events through observe_public_event.
+template <int NPlayers>
+void apply_coup_event(
+    IGameState& /*state*/,
+    EventPhase /*phase*/,
+    const std::string& /*kind*/,
+    const AnyMap& /*payload*/) {
+  // No-op: Coup events are advisory signals for the tracker, not state
+  // mutations. The ground-truth flow (challenge reveal, lose influence,
+  // exchange reshuffle) is already captured by do_action_fast under the
+  // sampled world from randomize_unseen.
+}
+
 template <int NPlayers>
 board_ai::GameBundle make_coup(const std::string& game_id, std::uint64_t seed) {
   using namespace board_ai::coup;
@@ -146,10 +270,13 @@ board_ai::GameBundle make_coup(const std::string& game_id, std::uint64_t seed) {
   b.value_model = std::make_unique<board_ai::DefaultStateValueModel>();
   b.encoder = std::make_unique<CoupFeatureEncoder<NPlayers>>();
   b.belief_tracker = std::make_unique<CoupBeliefTracker<NPlayers>>();
-  b.stochastic_detector = board_ai::default_stochastic_detector;
   b.state_serializer = serialize_coup<NPlayers>;
   b.action_descriptor = describe_coup;
   b.heuristic_picker = heuristic_random;
+  b.public_event_extractor = extract_coup_events<NPlayers>;
+  b.public_event_applier = apply_coup_event<NPlayers>;
+  b.initial_observation_extractor = extract_coup_initial_observation<NPlayers>;
+  b.initial_observation_applier = apply_coup_initial_observation<NPlayers>;
   return b;
 }
 

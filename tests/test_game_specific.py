@@ -121,8 +121,8 @@ class TestQuoridor:
 # ---------------------------------------------------------------------------
 
 class TestSplendor:
-    """Splendor has: belief_tracker, stochastic_detector, tail_solver,
-    tail_solve_trigger (>=12 points). No heuristic."""
+    """Splendor has: belief_tracker, tail_solver, tail_solve_trigger
+    (>=12 points). No heuristic."""
 
     def test_splendor_selfplay_completes(self):
         """Splendor games with hidden info should complete without crash."""
@@ -159,11 +159,13 @@ class TestSplendor:
         assert "value" in r
         assert "budget_exceeded" in r
 
-    def test_splendor_no_heuristic(self):
-        """Splendor has no registered heuristic_picker; must raise."""
+    def test_splendor_heuristic_returns_legal_action(self):
+        """Splendor now has a uniform-random heuristic_picker (for web
+        'heuristic' difficulty fallback). Must return a legal action."""
         gs = dinoboard_engine.GameSession("splendor", seed=42)
-        with pytest.raises(RuntimeError, match="no heuristic_picker registered"):
-            gs.get_heuristic_action()
+        result = gs.get_heuristic_action()
+        assert "action" in result
+        assert result["action"] in gs.get_all_legal_actions()
 
     def test_splendor_state_dict_has_hidden_info_fields(self):
         """Splendor state should contain gem/card-related fields."""
@@ -178,7 +180,7 @@ class TestSplendor:
 # ---------------------------------------------------------------------------
 
 class TestAzul:
-    """Azul has: belief_tracker, stochastic_detector (truncation mode).
+    """Azul has: belief_tracker only (randomize_unseen shuffles the bag).
     No tail_solver, heuristic, filter."""
 
     def test_azul_selfplay_completes(self):
@@ -209,11 +211,12 @@ class TestAzul:
                 depth_limit=5, node_budget=10000,
             )
 
-    def test_azul_no_heuristic(self):
-        """Azul has no registered heuristic_picker; must raise."""
+    def test_azul_heuristic_returns_legal_action(self):
+        """Azul has a uniform-random heuristic_picker."""
         gs = dinoboard_engine.GameSession("azul", seed=42)
-        with pytest.raises(RuntimeError, match="no heuristic_picker registered"):
-            gs.get_heuristic_action()
+        result = gs.get_heuristic_action()
+        assert "action" in result
+        assert result["action"] in gs.get_all_legal_actions()
 
     def test_azul_state_dict_valid(self):
         gs = dinoboard_engine.GameSession("azul", seed=42)
@@ -227,13 +230,15 @@ class TestAzul:
 # ---------------------------------------------------------------------------
 
 class TestTicTacToe:
-    """TicTacToe is the simplest game — no optional components."""
+    """TicTacToe is the simplest game — minimal optional components (just
+    a uniform-random heuristic_picker for the web UI fallback)."""
 
-    def test_tictactoe_no_heuristic(self):
-        """TicTacToe has no registered heuristic_picker; must raise."""
+    def test_tictactoe_heuristic_returns_legal_action(self):
+        """Uniform-random heuristic must return a legal action."""
         gs = dinoboard_engine.GameSession("tictactoe", seed=42)
-        with pytest.raises(RuntimeError, match="no heuristic_picker registered"):
-            gs.get_heuristic_action()
+        result = gs.get_heuristic_action()
+        assert "action" in result
+        assert result["action"] in gs.get_all_legal_actions()
 
     def test_tictactoe_no_tail_solver(self):
         with pytest.raises(RuntimeError, match="no tail_solver registered"):

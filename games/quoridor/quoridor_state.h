@@ -110,6 +110,8 @@ struct QuoridorState final : public CloneableState<QuoridorState> {
   QuoridorState();
 
   StateHash64 state_hash(bool include_hidden_rng) const override;
+  void hash_public_fields(Hasher& h) const override;
+  void hash_private_fields(int player, Hasher& h) const override;
   int current_player() const override { return current_player_; }
   bool is_terminal() const override { return terminal; }
   int num_players() const override { return kPlayers; }

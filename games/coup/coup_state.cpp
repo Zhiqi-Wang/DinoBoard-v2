@@ -33,6 +33,7 @@ CoupState<NPlayers>::CoupState() = default;
 
 template <int NPlayers>
 void CoupState<NPlayers>::reset_with_seed(std::uint64_t seed) {
+  this->step_count_ = 0;
   data = CoupData<NPlayers>{};
   undo_stack.clear();
   rng_salt = sanitize_seed(seed);
@@ -116,6 +117,56 @@ StateHash64 CoupState<NPlayers>::state_hash(bool include_hidden_rng) const {
 }
 
 template <int NPlayers>
+void CoupState<NPlayers>::hash_public_fields(Hasher& h) const {
+  // Coup public info: stage, plies, declared actions and challenges, coins,
+  // alive status, revealed (dead) influences, public deck size.
+  h.add(data.current_player);
+  h.add(static_cast<int>(data.stage));
+  h.add(data.ply);
+  h.add(data.active_player);
+  h.add(data.declared_action + 1);
+  h.add(data.action_target + 1);
+  h.add(data.challenger + 1);
+  h.add(data.blocker + 1);
+  h.add(data.challenge_check_index);
+  h.add(data.action_challenged);
+  h.add(data.action_challenge_succeeded);
+  h.add(data.counter_challenged);
+  h.add(data.counter_challenge_succeeded);
+  for (int p = 0; p < NPlayers; ++p) {
+    h.add(data.alive[p]);
+    h.add(data.coins[p]);
+    for (int s = 0; s < 2; ++s) {
+      h.add(data.revealed[p][s]);
+      if (data.revealed[p][s]) {
+        h.add(data.influence[p][s] + 1);
+      }
+    }
+  }
+  h.add(data.court_deck.size());
+}
+
+template <int NPlayers>
+void CoupState<NPlayers>::hash_private_fields(int player, Hasher& h) const {
+  // Coup private: player's own face-down influence cards + any exchange-drawn
+  // cards when player is currently exchanging.
+  if (player < 0 || player >= NPlayers) return;
+  for (int s = 0; s < 2; ++s) {
+    if (!data.revealed[player][s]) {
+      h.add(data.influence[player][s] + 100);
+    }
+  }
+  const bool exchanging =
+      data.stage == CoupStage::kExchangeReturn1 ||
+      data.stage == CoupStage::kExchangeReturn2;
+  if (exchanging && data.active_player == player) {
+    for (int i = 0; i < 2; ++i) {
+      h.add(data.exchange_drawn[i] + 200);
+    }
+  }
+}
+
+template <int NPlayers>
 int CoupState<NPlayers>::current_player() const {
   return data.current_player;
 }
@@ -133,11 +184,6 @@ bool CoupState<NPlayers>::is_terminal() const {
 template <int NPlayers>
 int CoupState<NPlayers>::winner() const {
   return data.winner;
-}
-
-template <int NPlayers>
-std::uint64_t CoupState<NPlayers>::rng_nonce() const {
-  return data.draw_nonce;
 }
 
 template <int NPlayers>

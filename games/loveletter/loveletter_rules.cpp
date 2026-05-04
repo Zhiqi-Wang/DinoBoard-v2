@@ -273,6 +273,7 @@ UndoToken LoveLetterRules<NPlayers>::do_action_fast(IGameState& state, ActionId 
   auto& d = s.data;
 
   s.undo_stack.push_back(d);
+  s.begin_step();
   d.ply++;
 
   const DecodedAction act = decode_action(action);
@@ -381,6 +382,7 @@ void LoveLetterRules<NPlayers>::undo_action(IGameState& state, const UndoToken& 
   if (s.undo_stack.empty()) return;
   s.data = std::move(s.undo_stack.back());
   s.undo_stack.pop_back();
+  s.end_step();
 }
 
 template class LoveLetterRules<2>;

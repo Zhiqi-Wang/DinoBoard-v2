@@ -136,11 +136,22 @@ def _get_ai_move(gs: engine.GameSession, sess: dict) -> dict:
 
 
 def _analyze_user_move(sess: dict) -> dict | None:
-    """Compute analysis for the human's last move using single-search approach.
+    """Drop-score analysis for the human's last move.
 
-    Runs one MCTS on the pre-move position.  The best action's Q value gives
-    best_wr; the chosen action's Q value (from the same search tree) gives
-    actual_wr.  No separate probe search needed.
+    Does NOT run its own MCTS. Consumes the precompute result that was
+    already scheduled when the current human-to-play position was first
+    reached (after the previous AI move, game start, or undo). The same
+    precompute result also backs the "智能提示" (ai-hint) endpoint — one
+    MCTS per human-to-play state, reused for both purposes.
+
+    Flow: wait up to 8s for precompute to finish, then read the best
+    action's Q value (best_wr) and the human's chosen action's Q value
+    (actual_wr) from the cached `action_values` dict. Drop score is
+    (best_wr - actual_wr) * 100.
+
+    Fallback: if precompute never completed (unusual — cancelled or timed
+    out), run an inline MCTS as a backstop so the analysis still resolves.
+    This should be rare; the normal path is cache-hit.
     """
     action_history = list(sess["action_history"])
     if not action_history:
@@ -353,9 +364,18 @@ def schedule_pipeline_ai_only(sess: dict, session_id: str) -> None:
 
 
 def signal_cancel(sess: dict) -> None:
-    """Non-blocking cancel: signal workers to stop, don't wait."""
+    """Non-blocking cancel of the PIPELINE only: signal workers to stop.
+
+    Does NOT touch the precompute — precompute runs in a separate executor
+    and its cached result is needed by _analyze_user_move right after the
+    cancel. Clearing precompute here caused a bug where apply_action's
+    opening cancel_pipeline() wiped the game-start precompute, forcing
+    _analyze_user_move to time-wait 8s on an empty cache (observed as
+    "AI takes ~10 seconds to respond to the first move"). Callers that
+    genuinely need to invalidate precompute (undo / state rebuild) must
+    call precompute_clear() explicitly.
+    """
     pipeline_mark_done_empty(sess)
-    precompute_clear(sess)
 
 
 def cancel_pipeline(sess: dict) -> None:

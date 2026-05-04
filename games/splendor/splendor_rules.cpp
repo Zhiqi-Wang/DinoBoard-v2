@@ -3,8 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <stdexcept>
-#include <unordered_map>
 
 namespace board_ai::splendor {
 
@@ -254,6 +252,16 @@ void finalize_turn(SplendorData<NPlayers>& d, int actor) {
   clear_pending_nobles(d);
   update_terminal(d, actor);
   d.current_player = (actor + 1) % Cfg::kPlayers;
+  // Bump draw_nonce at every turn boundary. This mirrors the BUG-023 fix
+  // in Love Letter: NoPeek fires on nonce change, and we must force it to
+  // fire here because actions like TakeTokens / BuyReserved / ReturnToken
+  // don't themselves draw from any deck — yet the next player may hold a
+  // blind-reserved card (reserved_visible=0) whose identity is hidden to
+  // the observer. Without this bump, MCTS would compute the next player's
+  // legal_actions (which reads d.reserved[next][i] to check affordability)
+  // and apply(BuyReserved i) (which reads the true card's cost / points)
+  // against the TRUE state instead of a belief-sampled world.
+  ++d.draw_nonce;
 }
 
 }  // namespace
@@ -529,6 +537,7 @@ UndoToken SplendorRules<NPlayers>::do_action_fast(IGameState& state, ActionId ac
   UndoToken t{};
   t.undo_depth = static_cast<std::uint32_t>(s->undo_stack.size());
   s->undo_stack.push_back(s->persistent);
+  s->begin_step();
   if (validate_action(*s, action)) {
     s->persistent = s->persistent.advance(action);
   }
@@ -541,6 +550,7 @@ UndoToken SplendorRules<NPlayers>::do_action_deterministic(IGameState& state, Ac
   UndoToken t{};
   t.undo_depth = static_cast<std::uint32_t>(s->undo_stack.size());
   s->undo_stack.push_back(s->persistent);
+  s->begin_step();
   if (validate_action(*s, action)) {
     auto data_copy = s->persistent.data();
     data_copy.forced_draw_override = -2;
@@ -560,70 +570,8 @@ void SplendorRules<NPlayers>::undo_action(IGameState& state, const UndoToken& to
   if (s->undo_stack.empty()) return;
   s->persistent = s->undo_stack.back();
   s->undo_stack.pop_back();
+  s->end_step();
   (void)token;
-}
-
-template <int NPlayers>
-std::vector<ChanceOutcome> SplendorRules<NPlayers>::chance_outcomes(
-    const IGameState& state, ActionId action) const {
-  const auto& d = checked_cast<SplendorState<NPlayers>>(state).persistent.data();
-  if (d.terminal) return {};
-  if (stage_of(d) != SplendorTurnStage::kNormal) return {};
-
-  int draw_tier = -1;
-  if (action >= Cfg::kBuyFaceupOffset && action < Cfg::kBuyFaceupOffset + Cfg::kBuyFaceupCount) {
-    const int local = action - Cfg::kBuyFaceupOffset;
-    draw_tier = local / 4;
-    const int slot = local % 4;
-    if (slot >= d.tableau_size[static_cast<size_t>(draw_tier)]) return {};
-    if (d.decks[static_cast<size_t>(draw_tier)].empty()) return {};
-  } else if (action >= Cfg::kReserveFaceupOffset && action < Cfg::kReserveFaceupOffset + Cfg::kReserveFaceupCount) {
-    const int local = action - Cfg::kReserveFaceupOffset;
-    draw_tier = local / 4;
-    const int slot = local % 4;
-    if (slot >= d.tableau_size[static_cast<size_t>(draw_tier)]) return {};
-    if (d.decks[static_cast<size_t>(draw_tier)].empty()) return {};
-  } else if (action >= Cfg::kReserveDeckOffset && action < Cfg::kReserveDeckOffset + Cfg::kReserveDeckCount) {
-    draw_tier = action - Cfg::kReserveDeckOffset;
-    if (d.decks[static_cast<size_t>(draw_tier)].empty()) return {};
-  } else {
-    return {};
-  }
-
-  if (draw_tier < 0 || draw_tier >= 3) return {};
-  const auto& deck = d.decks[static_cast<size_t>(draw_tier)];
-  if (deck.empty()) return {};
-
-  std::unordered_map<int, int> counts;
-  for (auto cid : deck) counts[cid] += 1;
-
-  const float total = static_cast<float>(deck.size());
-  std::vector<ChanceOutcome> outcomes;
-  outcomes.reserve(counts.size());
-  for (const auto& [cid, cnt] : counts) {
-    outcomes.push_back({cid, static_cast<float>(cnt) / total});
-  }
-  return outcomes;
-}
-
-template <int NPlayers>
-UndoToken SplendorRules<NPlayers>::do_action_with_outcome(
-    IGameState& state, ActionId action, int outcome_id) const {
-  auto* s = &checked_cast<SplendorState<NPlayers>>(state);
-  UndoToken t{};
-  t.undo_depth = static_cast<std::uint32_t>(s->undo_stack.size());
-  s->undo_stack.push_back(s->persistent);
-  if (validate_action(*s, action)) {
-    auto data_copy = s->persistent.data();
-    data_copy.forced_draw_override = static_cast<std::int16_t>(outcome_id);
-    auto applied = apply_action_copy(data_copy, action);
-    applied.forced_draw_override = -1;
-    auto node = std::make_shared<SplendorPersistentNode<NPlayers>>();
-    node->action_from_parent = action;
-    node->materialized = std::make_shared<SplendorData<NPlayers>>(std::move(applied));
-    s->persistent = SplendorPersistentState<NPlayers>(std::move(node));
-  }
-  return t;
 }
 
 template class SplendorRules<2>;

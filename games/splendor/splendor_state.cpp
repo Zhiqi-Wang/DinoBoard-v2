@@ -258,6 +258,7 @@ SplendorState<NPlayers>::SplendorState() { reset_with_seed(0xC0FFEEu); }
 
 template <int NPlayers>
 void SplendorState<NPlayers>::reset_with_seed(std::uint64_t seed) {
+  this->step_count_ = 0;
   rng_salt = sanitize_seed(seed);
   persistent = SplendorPersistentState<NPlayers>::root_from_seed(rng_salt);
   undo_stack.clear();
@@ -266,6 +267,68 @@ void SplendorState<NPlayers>::reset_with_seed(std::uint64_t seed) {
 template <int NPlayers>
 StateHash64 SplendorState<NPlayers>::state_hash(bool include_hidden_rng) const {
   return persistent.state_hash(include_hidden_rng, rng_salt);
+}
+
+template <int NPlayers>
+void SplendorState<NPlayers>::hash_public_fields(Hasher& h) const {
+  using Cfg = SplendorConfig<NPlayers>;
+  const SplendorData<NPlayers>& d = persistent.data();
+  h.add(d.current_player + 3);
+  h.add(d.first_player + 5);
+  h.add(d.plies + 17);
+  h.add(d.final_round_remaining + 9);
+  h.add(d.stage + 21);
+  h.add(d.pending_returns + 25);
+  h.add(d.pending_nobles_size + 27);
+  for (auto slot : d.pending_noble_slots) h.add(slot + 29);
+  h.add(d.winner + 11);
+  h.add(d.terminal ? 1 : 0);
+  for (int v : d.scores) h.add(v + 101);
+  for (auto v : d.bank) h.add(v + 7);
+  for (int p = 0; p < Cfg::kPlayers; ++p) {
+    for (auto v : d.player_gems[p]) h.add(v + 13);
+    for (auto v : d.player_bonuses[p]) h.add(v + 19);
+    h.add(d.player_points[p] + 23);
+    h.add(d.player_cards_count[p] + 29);
+    h.add(d.player_nobles_count[p] + 31);
+    h.add(d.reserved_size[p] + 37);
+    // Reserved slots: face-up visibility + face-up card id are public.
+    // Face-down (blind) card ids are per-owner private — hashed in
+    // hash_private_fields for their owner only.
+    for (int i = 0; i < 3; ++i) {
+      const bool visible = d.reserved_visible[p][static_cast<size_t>(i)] != 0;
+      h.add((visible ? 1 : 0) + 43);
+      if (visible) {
+        h.add(d.reserved[p][static_cast<size_t>(i)] + 41);
+      }
+    }
+  }
+  for (int t = 0; t < 3; ++t) {
+    h.add(d.tableau_size[t] + 47);
+    for (auto cid : d.tableau[t]) h.add(cid + 53);
+    h.add(d.decks[t].size() + 59);
+    // Deck contents hidden from all players — not hashed anywhere.
+  }
+  h.add(d.nobles_size + 67);
+  for (int i = 0; i < Cfg::kNobleCount; ++i) {
+    h.add(d.nobles[static_cast<size_t>(i)] + 71);
+  }
+  h.add(rng_salt);
+}
+
+template <int NPlayers>
+void SplendorState<NPlayers>::hash_private_fields(int player, Hasher& h) const {
+  using Cfg = SplendorConfig<NPlayers>;
+  if (player < 0 || player >= Cfg::kPlayers) return;
+  const SplendorData<NPlayers>& d = persistent.data();
+  // Player p's private: their own face-down (blind) reserved cards' ids.
+  // Other players' blind reserves are hidden from p.
+  for (int i = 0; i < 3; ++i) {
+    const bool visible = d.reserved_visible[player][static_cast<size_t>(i)] != 0;
+    if (!visible) {
+      h.add(d.reserved[player][static_cast<size_t>(i)] + 73);
+    }
+  }
 }
 
 template <int NPlayers>
@@ -291,11 +354,6 @@ bool SplendorState<NPlayers>::is_turn_start() const {
 template <int NPlayers>
 int SplendorState<NPlayers>::winner() const {
   return persistent.data().winner;
-}
-
-template <int NPlayers>
-std::uint64_t SplendorState<NPlayers>::rng_nonce() const {
-  return persistent.data().draw_nonce;
 }
 
 template struct SplendorData<2>;

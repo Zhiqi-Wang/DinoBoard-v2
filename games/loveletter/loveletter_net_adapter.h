@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <random>
 #include <vector>
 
@@ -21,13 +22,18 @@ class LoveLetterFeatureEncoder final : public IFeatureEncoder {
       : tracker_(tracker) {}
   int action_space() const override { return kActionSpace; }
   int feature_dim() const override { return Cfg::kFeatureDim; }
+  int public_feature_dim() const override { return Cfg::kPublicFeatureDim; }
+  int private_feature_dim() const override { return Cfg::kPrivateFeatureDim; }
 
-  bool encode(
+  void encode_public(
       const IGameState& state,
       int perspective_player,
-      const std::vector<ActionId>& legal_actions,
-      std::vector<float>* features,
-      std::vector<float>* legal_mask) const override;
+      std::vector<float>* out) const override;
+
+  void encode_private(
+      const IGameState& state,
+      int player,
+      std::vector<float>* out) const override;
 
  private:
   const LoveLetterBeliefTracker<NPlayers>* tracker_ = nullptr;
@@ -37,13 +43,15 @@ template <int NPlayers>
 class LoveLetterBeliefTracker final : public IBeliefTracker {
  public:
   using Cfg = LoveLetterConfig<NPlayers>;
-  void init(const IGameState& state, int perspective_player) override;
-  void observe_action(
-      const IGameState& state_before,
+
+  void init(int perspective_player, const AnyMap& initial_observation) override;
+  void observe_public_event(
+      int actor,
       ActionId action,
-      const IGameState& state_after) override;
+      const std::vector<PublicEvent>& pre_events,
+      const std::vector<PublicEvent>& post_events) override;
   void randomize_unseen(IGameState& state, std::mt19937& rng) const override;
-  std::map<std::string, std::any> serialize() const override;
+  AnyMap serialize() const override;
 
   std::int8_t known_hand(int player) const {
     if (player < 0 || player >= Cfg::kPlayers) return 0;
@@ -53,6 +61,12 @@ class LoveLetterBeliefTracker final : public IBeliefTracker {
  private:
   int perspective_player_ = -1;
   std::array<std::int8_t, Cfg::kPlayers> known_hand_{};
+  // Perspective's own hand tracking. Maintained from init + events so
+  // the tracker can reason about the King swap without touching state.
+  std::int8_t own_hand_ = 0;
+  std::int8_t own_drawn_card_ = 0;
+  std::array<bool, Cfg::kPlayers> alive_tracked_{};
+  bool init_once_ = false;
 };
 
 extern template class LoveLetterFeatureEncoder<2>;

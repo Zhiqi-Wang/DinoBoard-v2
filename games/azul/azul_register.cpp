@@ -295,6 +295,157 @@ void apply_event(IGameState& state, EventPhase phase,
 
 }  // namespace azul_events
 
+// Simplified Azul heuristic inspired by (but far simpler than) mosaic-azul's
+// HeuristicBot (~1150 lines in the reference project). We boil it down to
+// ~5 high-signal features: pattern-line completion potential, floor
+// overflow penalty, wall-placement score, wall-conflict detection, and
+// first-player-token weight.
+//
+// This reads only public + own-side info (Azul has no non-symmetric hidden
+// info anyway — the bag is symmetric random — so leak risk is minimal.
+// Still, we limit reads to state.factories / state.center / state.players[*]
+// which are all publicly observable.)
+namespace azul_heuristic {
+
+using board_ai::azul::AzulConfig;
+using board_ai::azul::AzulRules;
+using board_ai::azul::AzulState;
+using board_ai::azul::kColors;
+using board_ai::azul::kRows;
+using board_ai::azul::kTargetsPerColor;
+
+constexpr int kFloorPenalties[7] = {1, 1, 2, 2, 2, 3, 3};
+
+inline int floor_penalty(int floor_before, int added) {
+  int total = 0;
+  for (int i = 0; i < added; ++i) {
+    int idx = std::min(floor_before + i, 6);
+    total += kFloorPenalties[idx];
+  }
+  return total;
+}
+
+// Inlined from AzulRules::{wall_col_for_color,score_wall_placement} since
+// those are private class helpers. Duplicating to avoid widening that API.
+inline int wall_col(int row, int color_idx) {
+  return (color_idx + row) % kColors;
+}
+
+template <typename PlayerT>
+int wall_placement_score(const PlayerT& p, int row, int col) {
+  auto filled = [&](int r, int c) -> bool {
+    if (r < 0 || r >= kRows || c < 0 || c >= kColors) return false;
+    return ((p.wall_mask[r] >> c) & 1U) != 0U;
+  };
+  int h = 1;
+  for (int c = col - 1; c >= 0 && filled(row, c); --c) ++h;
+  for (int c = col + 1; c < kColors && filled(row, c); ++c) ++h;
+  int v = 1;
+  for (int r = row - 1; r >= 0 && filled(r, col); --r) ++v;
+  for (int r = row + 1; r < kRows && filled(r, col); ++r) ++v;
+  if (h == 1 && v == 1) return 1;
+  if (h > 1 && v > 1) return h + v;
+  return std::max(h, v);
+}
+
+template <int NPlayers>
+double score_action_on_state(const AzulState<NPlayers>& s, ActionId action) {
+  using Cfg = AzulConfig<NPlayers>;
+
+  const int source = static_cast<int>(action / (kColors * kTargetsPerColor));
+  const int color = static_cast<int>((action / kTargetsPerColor) % kColors);
+  const int target = static_cast<int>(action % kTargetsPerColor);
+  const int actor = s.current_player_;
+  const auto& me = s.players[actor];
+
+  // Count tiles available from this source (public info).
+  int available = 0;
+  if (source == Cfg::kCenterSource) {
+    available = s.center[color];
+  } else if (source >= 0 && source < Cfg::kFactories) {
+    available = s.factories[source][color];
+  }
+  if (available == 0) return -1e6;  // should be filtered by legal_actions anyway
+
+  double score = 0.0;
+
+  // Taking from the center when first_player_token is still there:
+  // +1 but also adds penalty to floor.
+  int floor_add = 0;
+  if (source == Cfg::kCenterSource && s.first_player_token_in_center) {
+    floor_add += 1;  // first-player token lands on floor
+    score += 0.3;    // being first next round is worth something
+  }
+
+  if (target == 5) {
+    // All to floor — heavy penalty
+    floor_add += available;
+    score -= static_cast<double>(floor_penalty(me.floor_count, floor_add)) * 1.0;
+    return score;
+  }
+
+  // Target is a pattern line (0..4)
+  const int line_row = target;
+  const int line_cap = line_row + 1;
+  const int line_len = me.line_len[line_row];
+  const int existing_color = me.line_color[line_row];
+
+  // Check wall conflict: if color already on wall at this row, illegal-ish —
+  // rules should forbid this via legal_actions, but be defensive.
+  const int wall_col_idx = wall_col(line_row, color);
+  if (((me.wall_mask[line_row] >> wall_col_idx) & 1U) != 0U) {
+    return -1e5;
+  }
+  // Check line-color conflict: line already has a different color.
+  if (existing_color >= 0 && existing_color != color) {
+    return -1e5;
+  }
+
+  const int space_left = line_cap - line_len;
+  const int placed = std::min(available, space_left);
+  const int overflow = available - placed;
+
+  // Placement on line → score if line fills up this round.
+  if (placed + line_len == line_cap) {
+    // Line will fill — predict wall placement score.
+    double wall_score = static_cast<double>(
+        wall_placement_score(me, line_row, wall_col_idx));
+    score += wall_score * 1.2;
+    // Completing a long line is inherently valuable.
+    score += line_cap * 0.5;
+  } else {
+    // Partial fill — small reward for progress, scaled by proximity to completion.
+    double progress = static_cast<double>(placed + line_len) / line_cap;
+    score += progress * 0.6;
+  }
+
+  // Overflow to floor.
+  if (overflow > 0) {
+    floor_add += overflow;
+  }
+  score -= static_cast<double>(floor_penalty(me.floor_count, floor_add)) * 1.0;
+
+  return score;
+}
+
+template <int NPlayers>
+board_ai::HeuristicResult pick(
+    board_ai::IGameState& state,
+    const board_ai::IGameRules& rules,
+    std::uint64_t /*rng_seed*/) {
+  auto& s = board_ai::checked_cast<AzulState<NPlayers>>(state);
+  auto legal = rules.legal_actions(state);
+  board_ai::HeuristicResult result;
+  result.actions = legal;
+  result.scores.reserve(legal.size());
+  for (ActionId a : legal) {
+    result.scores.push_back(score_action_on_state<NPlayers>(s, a));
+  }
+  return result;
+}
+
+}  // namespace azul_heuristic
+
 template <int NPlayers>
 board_ai::GameBundle make_azul(const std::string& game_id, std::uint64_t seed) {
   board_ai::GameBundle b;
@@ -306,10 +457,9 @@ board_ai::GameBundle make_azul(const std::string& game_id, std::uint64_t seed) {
   b.value_model = std::make_unique<board_ai::DefaultStateValueModel>();
   b.encoder = std::make_unique<board_ai::azul::AzulFeatureEncoder<NPlayers>>();
   b.belief_tracker = std::make_unique<board_ai::azul::AzulBeliefTracker<NPlayers>>();
-  b.stochastic_detector = board_ai::default_stochastic_detector;
-  b.enable_chance_sampling = false;
   b.state_serializer = serialize_azul<NPlayers>;
   b.action_descriptor = describe_azul<NPlayers>;
+  b.heuristic_picker = azul_heuristic::pick<NPlayers>;
   b.public_event_extractor = azul_events::extract_events<NPlayers>;
   b.public_event_applier = azul_events::apply_event<NPlayers>;
   b.initial_observation_extractor = azul_events::extract_initial_observation<NPlayers>;

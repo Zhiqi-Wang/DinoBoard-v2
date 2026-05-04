@@ -16,14 +16,9 @@
 
 namespace board_ai {
 
-using StochasticTransitionDetector =
-    std::function<bool(const IGameState& before, const IGameState& after)>;
-
-inline bool default_stochastic_detector(const IGameState& before, const IGameState& after) {
-  return before.rng_nonce() != after.rng_nonce();
-}
-
-using AnyMap = std::map<std::string, std::any>;
+// AnyMap, PublicEvent, PublicEventTrace, EventPhase are defined in
+// game_interfaces.h so IBeliefTracker can reference them without a
+// circular include.
 
 using StateSerializer = std::function<AnyMap(const IGameState& state)>;
 
@@ -80,17 +75,10 @@ using TailSolveTrigger = std::function<bool(const IGameState& state, int ply)>;
 //     in Love Letter, "your face-down characters are [Duke, Captain]" in
 //     Coup). This overrides the AI session's own seed-generated hidden
 //     initial state.
-enum class EventPhase { kPreAction = 0, kPostAction = 1 };
-
-using PublicEvent = std::pair<std::string, AnyMap>;  // (kind, payload)
-
-// Events for a single action, split by phase. pre_events describe hidden
-// state the action depends on (e.g. Baron target's hand). post_events
-// describe random outcomes the action produced (e.g. Splendor deck flip).
-struct PublicEventTrace {
-  std::vector<PublicEvent> pre_events{};
-  std::vector<PublicEvent> post_events{};
-};
+//
+// EventPhase / PublicEvent / PublicEventTrace are declared in
+// game_interfaces.h (so belief_tracker.h can reference them without a
+// circular include).
 
 using PublicEventExtractor = std::function<PublicEventTrace(
     const IGameState& state_before,
@@ -122,8 +110,6 @@ struct GameBundle {
   std::unique_ptr<IStateValueModel> value_model;
   std::unique_ptr<IFeatureEncoder> encoder;
   std::unique_ptr<IBeliefTracker> belief_tracker;
-  StochasticTransitionDetector stochastic_detector;
-  bool enable_chance_sampling = true;
   StateSerializer state_serializer;
   ActionDescriptor action_descriptor;
   HeuristicPicker heuristic_picker;

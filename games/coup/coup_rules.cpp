@@ -364,6 +364,7 @@ UndoToken CoupRules<NPlayers>::do_action_fast(IGameState& state, ActionId action
   auto& s = checked_cast<CoupState<NPlayers>>(state);
   auto& d = s.data;
   s.undo_stack.push_back(d);
+  s.begin_step();
   d.ply++;
 
   switch (d.stage) {
@@ -624,6 +625,7 @@ void CoupRules<NPlayers>::undo_action(IGameState& state, const UndoToken& /*toke
   if (s.undo_stack.empty()) return;
   s.data = std::move(s.undo_stack.back());
   s.undo_stack.pop_back();
+  s.end_step();
 }
 
 template class CoupRules<2>;

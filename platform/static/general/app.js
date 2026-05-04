@@ -36,12 +36,35 @@ export function createApp(config) {
   const replay = createReplayController(refs.infoCol, config);
   const modal = createModal();
 
+  // Wire the replay-panel-visibility toggle now that `replay` exists.
+  // (Registering this inside the sidebar callbacks object above would put
+  // the closure in a TDZ relative to `replay`, which Safari flags at any
+  // synchronous eval of that closure.)
+  sidebar.onShowReplayToggle((flag) => { replay.setAlwaysVisible(flag); });
+  replay.setAlwaysVisible(sidebar.getShowReplayAlways());
+
   modal.onReplay(() => enterReplay());
   replay.onExit(() => exitReplay());
-  replay.onRenderFrame((frame, allFrames) => {
+  replay.onRenderFrame(async (frame, allFrames, prevFrame) => {
     if (config.onReplayFrames) config.onReplayFrames(allFrames);
+    // Animate the transition between prevFrame and the new frame — same
+    // describeTransition the live game uses. Only animates when:
+    //  - we have a prev frame (not the initial render)
+    //  - the step advances by 1 (sequential playback or next-button);
+    //    jumps to non-adjacent frames render instantly
+    //  - the new frame has action_info (not the start frame)
+    const prevPly = prevFrame && prevFrame.ply_index;
+    const curPly = frame && frame.ply_index;
+    const adjacent = prevFrame && typeof prevPly === 'number'
+        && typeof curPly === 'number' && curPly - prevPly === 1;
+    if (adjacent && frame.action_info && config.describeTransition) {
+      await animateTransition(prevFrame, frame, frame.action_info, frame.action_id);
+    }
     if (config.renderBoard) {
       config.renderBoard(refs.boardCol, frame, ctx);
+    }
+    if (config.renderPlayerArea) {
+      config.renderPlayerArea(refs.playerArea, frame, ctx);
     }
     updateReplayInfo(frame);
   });
@@ -55,10 +78,33 @@ export function createApp(config) {
     },
     submitAction(actionId) { onAction(actionId); },
     rerender() { render(); },
+    // Game-provided transient status line that appears in the info panel
+    // (position 2). Pass null/empty to hide. Used for "已选择 XX" prompts
+    // etc. — the info panel reserves a hide-when-empty slot so calling
+    // this doesn't shift other UI elements.
+    setInfoStatus(text) { infoPanel.setStatus(text); },
   };
 
+  // Human can interact (undo / force / hint) only when it's their turn
+  // AND the game isn't in a transient state (busy, polling, replay,
+  // terminal). `forceMode` counts as human's turn — while forcing we're
+  // actively making a move as the opponent.
+  function canHumanInteract() {
+    if (state.replayMode) return false;
+    if (!state.gameState || state.gameState.is_terminal) return false;
+    if (state.busy || poller.isPolling()) return false;
+    return !state.aiPlayers.includes(state.gameState.current_player) || state.forceMode;
+  }
+
+  function updateSidebarButtons() {
+    sidebar.setHumanCanAct(canHumanInteract());
+  }
+
   function render() {
-    if (state.replayMode) return;
+    if (state.replayMode) {
+      updateSidebarButtons();
+      return;
+    }
 
     if (config.renderBoard) {
       config.renderBoard(refs.boardCol, state.gameState, ctx);
@@ -68,6 +114,7 @@ export function createApp(config) {
     }
 
     updateInfoPanel();
+    updateSidebarButtons();
 
     if (config.extensions) {
       infoPanel.updateExtensions(state.gameState, config.extensions);
@@ -94,13 +141,11 @@ export function createApp(config) {
 
     if (gs.is_terminal) {
       infoPanel.setTurn('对局结束');
-      if (gs.winner < 0) {
-        infoPanel.setMessage('结果：平局');
-      } else if (state.aiPlayers.includes(gs.winner)) {
-        infoPanel.setMessage('结果：AI 获胜');
-      } else {
-        infoPanel.setMessage('结果：你赢了！');
-      }
+      let resultText;
+      if (gs.winner < 0) resultText = '结果：平局';
+      else if (state.aiPlayers.includes(gs.winner)) resultText = '结果：AI 获胜';
+      else resultText = '结果：你赢了！';
+      sidebar.setOpsMsg(resultText);
       infoPanel.setWinrate(state.lastAiWinrate);
       showGameOverModal();
       return;
@@ -234,6 +279,7 @@ export function createApp(config) {
     state.hintPending = false;
     infoPanel.setSuggest(null);
     state.busy = true;
+    updateSidebarButtons();
     if (config.onActionSubmitted) config.onActionSubmitted();
     try {
       const prevState = state.gameState;
@@ -242,12 +288,17 @@ export function createApp(config) {
       await animateTransition(prevState, data, data.action_info, actionId);
 
       state.gameState = data;
+      // Human just moved — clear any stashed AI last-action so the
+      // message pill doesn't keep showing the previous AI move while
+      // it's our turn / AI is thinking.
+      state.gameState.last_action_info = null;
+      state.gameState.last_action_id = null;
 
       if (state.forceMode) {
         state.forceMode = false;
         state.busy = false;
         render();
-        infoPanel.setMessage('已完成替对手落子');
+        sidebar.setOpsMsg('已完成替对手落子');
         return;
       }
 
@@ -260,12 +311,14 @@ export function createApp(config) {
     } catch (e) {
       sidebar.setOpsMsg('错误：' + e.message);
       state.busy = false;
+      updateSidebarButtons();
     }
   }
 
   function pollOnce() {
     return new Promise(resolve => {
       infoPanel.setTurn('当前轮到：AI 思考中...');
+      updateSidebarButtons();
       poller.poll(state.sessionId, {
         onThinking() {
           infoPanel.setTurn('当前轮到：AI 思考中...');
@@ -275,7 +328,7 @@ export function createApp(config) {
             const drop = analysis.drop_score;
             if (drop !== undefined && drop !== null && drop >= 5) {
               const label = drop >= 10 ? '严重失误' : '失误';
-              infoPanel.setMessage(label + '：掉分 ' + drop.toFixed(1) + '%');
+              sidebar.setOpsMsg(label + '：掉分 ' + drop.toFixed(1) + '%');
             }
           }
         },
@@ -314,6 +367,13 @@ export function createApp(config) {
       await animateTransition(prevState, result.data, result.aiActionInfo, result.aiAction);
 
       state.gameState = result.data;
+      // Attach AI's last action so updateInfoPanel can render it via
+      // formatOpponentMove. The backend's /session endpoint doesn't
+      // include last_action_info itself; we stitch it in client-side
+      // from the pipeline's ai_action_info so the info panel's message
+      // pill updates each AI move.
+      state.gameState.last_action_info = result.aiActionInfo;
+      state.gameState.last_action_id = result.aiAction;
       if (state.difficulty === 'expert') state.lastAiWinrate = result.aiWinrate;
       render();
 
@@ -336,6 +396,7 @@ export function createApp(config) {
     state.hintPending = false;
     infoPanel.setSuggest(null);
     state.busy = true;
+    updateSidebarButtons();
     sidebar.setOpsMsg('');
     try {
       const humanTag = 'player_' + state.humanPlayer;
@@ -354,10 +415,11 @@ export function createApp(config) {
       if (config.onUndo) config.onUndo();
       state.busy = false;
       render();
-      infoPanel.setMessage('已悔棋');
+      sidebar.setOpsMsg('已悔棋');
     } catch (e) {
       sidebar.setOpsMsg(e.message);
       state.busy = false;
+      updateSidebarButtons();
     }
   }
 
@@ -372,6 +434,7 @@ export function createApp(config) {
     state.hintPending = false;
     infoPanel.setSuggest(null);
     state.busy = true;
+    updateSidebarButtons();
     sidebar.setOpsMsg('');
     try {
       let attempts = 0;
@@ -395,7 +458,7 @@ export function createApp(config) {
         state.busy = false;
         render();
         const name = config.getPlayerSymbol ? config.getPlayerSymbol(cp) : '玩家' + cp;
-        infoPanel.setMessage('请替' + name + '落子');
+        sidebar.setOpsMsg('请替' + name + '落子');
       } else {
         state.busy = false;
         sidebar.setOpsMsg('无法回退到该对手的回合');
@@ -403,6 +466,7 @@ export function createApp(config) {
     } catch (e) {
       sidebar.setOpsMsg(e.message);
       state.busy = false;
+      updateSidebarButtons();
     }
   }
 
@@ -436,6 +500,7 @@ export function createApp(config) {
     modal.hide();
     try {
       state.replayMode = true;
+      updateSidebarButtons();
       replayMeta = null;
       replay.setResolveActor(resolveActorName);
       const data = await replay.enter(state.sessionId);
@@ -443,6 +508,7 @@ export function createApp(config) {
     } catch (e) {
       sidebar.setOpsMsg('加载录像失败：' + e.message);
       state.replayMode = false;
+      updateSidebarButtons();
     }
   }
 
@@ -501,6 +567,7 @@ export function createApp(config) {
     if (data.frames) {
       modal.hide();
       state.replayMode = true;
+      updateSidebarButtons();
       replay.enterWithFrames(data.frames);
     } else if (data.action_history) {
       sidebar.setOpsMsg(header + '（生成帧中…）');
@@ -518,6 +585,7 @@ export function createApp(config) {
         const built = await resp.json();
         modal.hide();
         state.replayMode = true;
+        updateSidebarButtons();
         replay.enterWithFrames(built.frames);
         sidebar.setOpsMsg(header);
       } catch (e) {

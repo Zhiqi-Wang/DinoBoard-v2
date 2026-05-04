@@ -7,6 +7,7 @@ QuoridorState::QuoridorState() {
 }
 
 void QuoridorState::reset_with_seed(std::uint64_t seed) {
+  step_count_ = 0;
   current_player_ = 0;
   winner_ = -1;
   terminal = false;
@@ -41,6 +42,27 @@ StateHash64 QuoridorState::state_hash(bool include_hidden_rng) const {
     hash_combine(h,static_cast<std::size_t>(rng_salt));
   }
   return static_cast<StateHash64>(h);
+}
+
+void QuoridorState::hash_public_fields(Hasher& h) const {
+  // Quoridor is fully public: board, walls, pawns, scores all visible.
+  h.add(current_player_);
+  h.add(winner_ + 1);
+  h.add(terminal ? 1 : 0);
+  h.add(move_count);
+  h.add(scores[0] + 2);
+  h.add(scores[1] + 2);
+  for (int p = 0; p < kPlayers; ++p) {
+    h.add(pawn_row[static_cast<size_t>(p)] + 1);
+    h.add(pawn_col[static_cast<size_t>(p)] + 1);
+    h.add(walls_remaining[static_cast<size_t>(p)] + 1);
+  }
+  for (std::uint8_t w : h_walls) h.add(w);
+  for (std::uint8_t w : v_walls) h.add(w);
+}
+
+void QuoridorState::hash_private_fields(int /*player*/, Hasher& /*h*/) const {
+  // Quoridor has no private info.
 }
 
 }  // namespace board_ai::quoridor

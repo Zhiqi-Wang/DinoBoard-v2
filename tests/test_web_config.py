@@ -139,9 +139,17 @@ class TestSessionCreation:
 
     @staticmethod
     def _ensure_test_model(game_id):
-        """Create a random model if none exists, so create_session doesn't fail."""
-        model_dir = PROJECT_ROOT / "games" / game_id / "model"
-        model_path = model_dir / "best_model.onnx"
+        """Create a random model if none exists, so create_session doesn't fail.
+
+        Deployment convention (see game_service/sessions.py::find_model_path):
+        games/<base>/model/<variant>.onnx. The base form is treated as
+        '<base>_2p' by the resolver.
+        """
+        import re
+        base = re.sub(r"_\d+p$", "", game_id)
+        variant = game_id if game_id != base else f"{base}_2p"
+        model_dir = PROJECT_ROOT / "games" / base / "model"
+        model_path = model_dir / f"{variant}.onnx"
         if model_path.exists():
             return
         sys.path.insert(0, str(PROJECT_ROOT))
@@ -163,18 +171,34 @@ class TestSessionCreation:
         )
         return session_id, sess
 
+    @pytest.mark.skipif(
+        "coup" not in __import__("dinoboard_engine").available_games(),
+        reason="coup is disabled",
+    )
     def test_coup_casual_session_has_correct_simulations(self):
         _, sess = self._create_session("coup", "casual")
         assert sess["simulations"] == 50
 
+    @pytest.mark.skipif(
+        "coup" not in __import__("dinoboard_engine").available_games(),
+        reason="coup is disabled",
+    )
     def test_coup_casual_session_has_correct_temperature(self):
         _, sess = self._create_session("coup", "casual")
         assert sess["temperature"] == 0.3
 
+    @pytest.mark.skipif(
+        "coup" not in __import__("dinoboard_engine").available_games(),
+        reason="coup is disabled",
+    )
     def test_coup_expert_session_has_correct_temperature(self):
         _, sess = self._create_session("coup", "expert")
         assert sess["temperature"] == 0.1
 
+    @pytest.mark.skipif(
+        "coup" not in __import__("dinoboard_engine").available_games(),
+        reason="coup is disabled",
+    )
     def test_coup_session_has_correct_analysis_sims(self):
         _, sess = self._create_session("coup", "casual")
         assert sess["analysis_simulations"] == 2000
@@ -198,7 +222,8 @@ class TestSessionCreation:
                            num_players=2, difficulty="impossible")
 
     def test_heuristic_session_no_model(self):
-        _, sess = self._create_session("coup", "heuristic")
+        # Use loveletter — coup is temporarily disabled in the build.
+        _, sess = self._create_session("loveletter", "heuristic")
         assert sess["use_model"] is False
 
 

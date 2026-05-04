@@ -18,8 +18,13 @@ body {
   overflow: hidden;
 }
 
+/* When collapsed, drop the sidebar track entirely (single-column grid)
+ * rather than keeping a 0px track around. Chrome has been observed to
+ * render the stage with the wrong width when the grid template is
+ * `0 1fr` and the first item is display:none — "画面全没了" bug. The
+ * single-column form is unambiguous. */
 .layout.sidebar-collapsed {
-  grid-template-columns: 0 1fr;
+  grid-template-columns: 1fr;
 }
 
 .layout.sidebar-collapsed .sidebar {
@@ -147,6 +152,24 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   font-size: 12px;
 }
 
+.side-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #cbd5e1;
+  cursor: pointer;
+  margin-top: 4px;
+  user-select: none;
+}
+
+.side-toggle input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  cursor: pointer;
+}
+
 /* --- Sidebar Toggle --- */
 
 .sidebar-toggle {
@@ -200,30 +223,37 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   margin: auto;
 }
 
+/* align-items: center so whichever of {game-board-col, info-col} is
+ * taller defines the table-area height, and the shorter side is
+ * vertically centered against it. For Azul this means: 4p's tall 3-row
+ * factory grid dominates and the info-col centers beside it; 2p's short
+ * 2-row factory grid centers beside the info-col content. */
 .table-area {
   display: flex;
   gap: 16px;
-  position: relative;
-  padding-right: 296px;
+  align-items: center;
 }
 
 .game-board-col {
   flex: 1;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
 }
 
+/* Info column sizes to its own content (info-panel + extensions + replay
+ * panel, all fixed/natural heights). No forced min-height — the previous
+ * `min-height: 640px` was there to prevent the replay panel from being
+ * clipped, but now the panel's .analysis-panel + .analysis-step-card +
+ * .analysis-list all have explicit heights and don't rely on ambient
+ * space. Wasted vertical space between the info column's content end
+ * and the player area is what we're trying to eliminate. */
 .info-col {
-  position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 280px;
+  width: 340px;
+  flex: 0 0 340px;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  overflow: hidden;
 }
 
 .player-area {
@@ -280,6 +310,7 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 .info-panel {
   display: grid;
   gap: 4px;
+  flex: 0 0 auto;  /* natural height, never shrink — 5 pills always visible */
 }
 
 .info-pill {
@@ -295,6 +326,7 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 .info-extensions {
   display: grid;
   gap: 4px;
+  flex: 0 0 auto;  /* natural height */
 }
 
 .info-extension {
@@ -307,19 +339,21 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 .analysis-panel {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  flex: 1;
-  min-height: 0;
+  gap: 6px;
+  /* Natural height — the panel is compact (buttons + fixed current-frame
+   * card + fixed list height) so it doesn't need to fill remaining
+   * info-col space. */
+  flex: 0 0 auto;
 }
 
 .analysis-panel[hidden] {
   display: none;
 }
 
+/* Title removed from DOM — the panel is recognizable by context. Keep
+ * the class in case a game re-adds it, but size it to zero when empty. */
 .analysis-title {
-  font-size: 16px;
-  font-weight: 700;
-  color: #0f3554;
+  display: none;
 }
 
 .analysis-controls {
@@ -342,19 +376,30 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   opacity: 0.5;
 }
 
+/* Current-frame card and list items share the same dimensions so the
+ * "pinned current" at top looks identical in size to the rows below.
+ * Always 3 lines (帧数-玩家-行动 / 胜率-掉点 / AI 推荐)，missing
+ * stats/suggest slots render as "—" rather than being omitted, so
+ * every card is exactly the same height. */
 .analysis-step-card {
-  background: #f0f7ff;
-  border: 1px solid #bfdbfe;
-  border-radius: 8px;
-  padding: 8px 10px;
-  font-size: 13px;
+  background: #eff6ff;
+  border: 1px solid #2563eb;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  line-height: 1.3;
   color: #0f172a;
   white-space: pre-line;
+  height: 58px;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
+/* List shows ~2 items at a time; longer replays scroll within this
+ * fixed window. Height = 2×58 + 4 gap = 120. */
 .analysis-list {
-  flex: 1;
-  min-height: 0;
+  flex: 0 0 auto;
+  height: 120px;
   overflow-y: auto;
   display: grid;
   gap: 4px;
@@ -380,27 +425,27 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   background: #64748b;
 }
 
+/* Same dimensions as .analysis-step-card so the pinned current frame
+ * and the scrollable list entries look identical. */
 .analysis-item {
   background: #f8fafc;
   border: 1px solid #e5e7eb;
   border-radius: 6px;
-  padding: 6px 8px;
+  padding: 4px 8px;
   font-size: 12px;
+  line-height: 1.3;
   cursor: pointer;
   display: grid;
-  gap: 2px;
+  gap: 1px;
+  height: 58px;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .analysis-item:hover { background: #f0f4f8; }
 .analysis-item.current { border-color: #2563eb; background: #eff6ff; }
 .analysis-item.warn { border-left: 3px solid #f59e0b; }
 .analysis-item.blunder { border-left: 3px solid #ef4444; }
-
-.replay-exit-btn {
-  height: 32px;
-  background: #64748b;
-  font-size: 13px;
-}
 
 /* --- Modal --- */
 
@@ -475,6 +520,12 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 }
 
 @media (max-width: 900px) {
-  .table-area { flex-direction: column; padding-right: 0; }
-  .info-col { position: static; width: 100%; min-width: 0; max-height: 400px; }
+  .table-area { flex-direction: column; }
+  .info-col {
+    width: 100%;
+    flex: 0 0 auto;
+    min-width: 0;
+    min-height: 0;
+    max-height: 400px;
+  }
 }

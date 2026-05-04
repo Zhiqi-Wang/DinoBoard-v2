@@ -351,6 +351,27 @@ PublicEventTrace extract_events(
   const auto& da = sa.persistent.data();
   PublicEventTrace out;
 
+  const int actor = db.current_player;
+
+  // opp_buy_reserved_reveal (pre): when actor != perspective buys their
+  // own hidden reserved card (action 27/28/29 on a reserved_visible==0
+  // slot), the card ID becomes public because its cost is paid from the
+  // bank. The API side had a sampled placeholder for this card — we must
+  // override it to the true card ID BEFORE do_action_fast so that
+  // pay_for_card computes the correct payment.
+  if (action >= Cfg::kBuyReservedOffset && action < Cfg::kBuyReservedOffset + Cfg::kBuyReservedCount &&
+      actor != perspective && actor >= 0 && actor < NPlayers) {
+    const int idx = action - Cfg::kBuyReservedOffset;
+    if (idx < db.reserved_size[actor] &&
+        db.reserved_visible[actor][static_cast<size_t>(idx)] == 0) {
+      AnyMap payload;
+      payload["player"] = std::any(actor);
+      payload["slot"] = std::any(idx);
+      payload["card_id"] = std::any(static_cast<int>(db.reserved[actor][static_cast<size_t>(idx)]));
+      out.pre_events.emplace_back("opp_buy_reserved_reveal", std::move(payload));
+    }
+  }
+
   // deck_flip: any tableau slot whose card changed is a public flip.
   for (int t = 0; t < 3; ++t) {
     const int max_slot = std::max<int>(db.tableau_size[t], da.tableau_size[t]);
@@ -368,7 +389,6 @@ PublicEventTrace extract_events(
   }
 
   // self_reserve_deck: emitted only when perspective reserved from deck top.
-  const int actor = db.current_player;
   const bool is_reserve_deck = action >= Cfg::kReserveDeckOffset &&
       action < Cfg::kReserveDeckOffset + Cfg::kReserveDeckCount;
   if (is_reserve_deck && actor == perspective) {
@@ -391,11 +411,24 @@ PublicEventTrace extract_events(
 template <int NPlayers>
 void apply_event(IGameState& state, EventPhase phase,
                  const std::string& kind, const AnyMap& payload) {
-  if (phase != EventPhase::kPostAction) {
+  auto& s = board_ai::checked_cast<SplendorState<NPlayers>>(state);
+  if (phase == EventPhase::kPreAction) {
+    if (kind == "opp_buy_reserved_reveal") {
+      const int target_player = std::any_cast<int>(payload.at("player"));
+      const int slot = std::any_cast<int>(payload.at("slot"));
+      const int cid = std::any_cast<int>(payload.at("card_id"));
+      mutate_persistent<NPlayers>(s, [&](SplendorData<NPlayers>& d) {
+        if (target_player >= 0 && target_player < NPlayers &&
+            slot >= 0 && slot < d.reserved_size[target_player]) {
+          d.reserved[target_player][slot] = static_cast<std::int16_t>(cid);
+          d.reserved_visible[target_player][slot] = 1;
+        }
+      });
+      return;
+    }
     throw std::runtime_error(
         "splendor: unexpected pre-action event '" + kind + "'");
   }
-  auto& s = board_ai::checked_cast<SplendorState<NPlayers>>(state);
   if (kind == "deck_flip") {
     const int tier = std::any_cast<int>(payload.at("tier"));
     const int slot = std::any_cast<int>(payload.at("slot"));
@@ -461,6 +494,177 @@ void apply_event(IGameState& state, EventPhase phase,
 
 }  // namespace splendor_events
 
+// Splendor heuristic — inspired by the reference impl in the old
+// DinoBoard (参考项目/DinoBoard-main/...cpp_splendor_engine_module.cpp),
+// **rewritten to strictly respect the observer-vs-truth boundary**.
+//
+// Leak audit (from the reference):
+//   - The old impl read `d.reserved[op][slot]` without checking
+//     `reserved_visible[op][slot]` — i.e. it read opponent's BLIND
+//     reserved card IDs, which is hidden information. That's a leak.
+//   - It also iterated over noble slots (public, fine) and
+//     player_bonuses / player_gems / player_points (all public, fine).
+//
+// Our rewrite:
+//   - Self reserved: full access (we own it).
+//   - Opp reserved: ONLY card IDs where reserved_visible[op][slot]==1.
+//     Blind opp reserved is never inspected; its effect is approximated
+//     generically (slot-count pressure only).
+//   - Never touch d.decks[] content.
+//
+// This makes the picker safe to run on selfplay truth state: even though
+// the state object contains opp's blind card IDs, the heuristic code path
+// is identical to what it would read from a belief-sampled world.
+namespace splendor_heuristic {
+
+using board_ai::splendor::SplendorCard;
+using board_ai::splendor::SplendorConfig;
+using board_ai::splendor::SplendorData;
+using board_ai::splendor::SplendorRules;
+using board_ai::splendor::SplendorState;
+using board_ai::splendor::kColorCount;
+using board_ai::splendor::splendor_card_pool;
+using board_ai::splendor::splendor_nobles;
+
+// How many gems of each color `player` is short of affording this card,
+// given their gems + bonuses (public info). Ignores gold (wildcards) for
+// simplicity — mild over-estimate of deficit.
+template <int NPlayers>
+int deficit_for_card(const SplendorData<NPlayers>& d, int player, const SplendorCard& card) {
+  int total_short = 0;
+  int gold = d.player_gems[player][5];
+  for (int c = 0; c < kColorCount; ++c) {
+    int raw = card.cost[c];
+    int bonus = d.player_bonuses[player][c];
+    int have = d.player_gems[player][c];
+    int need = std::max(0, raw - bonus);
+    int short_c = std::max(0, need - have);
+    // Gold can cover any color — greedily apply, capped by what we have.
+    int gold_use = std::min(short_c, gold);
+    short_c -= gold_use;
+    gold -= gold_use;
+    total_short += short_c;
+  }
+  return total_short;
+}
+
+// Noble requirement we're closest to. Returns count of bonuses still
+// missing for the nearest noble (best_missing). Public info only.
+template <int NPlayers>
+int nearest_noble_missing(const SplendorData<NPlayers>& d, int player) {
+  const auto& nobles = splendor_nobles();
+  int best = 99;
+  for (int i = 0; i < d.nobles_size; ++i) {
+    int nid = d.nobles[i];
+    if (nid < 0 || nid >= static_cast<int>(nobles.size())) continue;
+    int missing = 0;
+    for (int c = 0; c < kColorCount; ++c) {
+      missing += std::max(0, static_cast<int>(nobles[nid][c]) - d.player_bonuses[player][c]);
+    }
+    best = std::min(best, missing);
+  }
+  return best;
+}
+
+// Board position eval from perspective of `player`. Public + own-private only.
+template <int NPlayers>
+double eval_position(const SplendorData<NPlayers>& d, int player) {
+  if (d.terminal) {
+    if (d.winner < 0) return 0.0;
+    return d.winner == player ? 1000.0 : -1000.0;
+  }
+  double score = 0.0;
+  // Points (public, public).
+  for (int p = 0; p < NPlayers; ++p) {
+    double sign = (p == player) ? 1.0 : -1.0 / std::max(1, NPlayers - 1);
+    score += sign * static_cast<double>(d.player_points[p]) * 8.0;
+  }
+  // Bonuses = engine strength (public).
+  for (int p = 0; p < NPlayers; ++p) {
+    double sign = (p == player) ? 1.0 : -0.5 / std::max(1, NPlayers - 1);
+    int bonus_total = 0;
+    for (int c = 0; c < kColorCount; ++c) bonus_total += d.player_bonuses[p][c];
+    score += sign * static_cast<double>(bonus_total) * 0.8;
+  }
+  // Nearest-noble proximity (public).
+  int my_missing = nearest_noble_missing(d, player);
+  score -= static_cast<double>(std::min(my_missing, 5)) * 0.6;
+  // Affordable buys on tableau (public).
+  const auto& cards = splendor_card_pool();
+  for (int tier = 0; tier < 3; ++tier) {
+    for (int slot = 0; slot < d.tableau_size[tier]; ++slot) {
+      int cid = d.tableau[tier][slot];
+      if (cid < 0 || cid >= static_cast<int>(cards.size())) continue;
+      int deficit = deficit_for_card(d, player, cards[cid]);
+      if (deficit == 0) {
+        score += 0.8 + static_cast<double>(cards[cid].points) * 0.4;
+      } else if (deficit <= 2) {
+        score += 0.25;
+      }
+    }
+  }
+  // Own reserved (fully legal to inspect).
+  for (int slot = 0; slot < d.reserved_size[player]; ++slot) {
+    int cid = d.reserved[player][slot];
+    if (cid < 0 || cid >= static_cast<int>(cards.size())) continue;
+    int deficit = deficit_for_card(d, player, cards[cid]);
+    score += static_cast<double>(cards[cid].points) * 0.6;
+    score -= static_cast<double>(deficit) * 0.35;
+  }
+  // Opponents' reserved — ONLY visible slots; blind slots add a small
+  // slot-count pressure without reading their card IDs (leak-safe).
+  for (int p = 0; p < NPlayers; ++p) {
+    if (p == player) continue;
+    for (int slot = 0; slot < d.reserved_size[p]; ++slot) {
+      bool visible = d.reserved_visible[p][slot] != 0;
+      if (visible) {
+        int cid = d.reserved[p][slot];
+        if (cid < 0 || cid >= static_cast<int>(cards.size())) continue;
+        score -= static_cast<double>(cards[cid].points) * 0.5;
+        // If they can afford it, they're a threat.
+        int op_def = deficit_for_card(d, p, cards[cid]);
+        if (op_def == 0) score -= 0.5;
+      } else {
+        // Blind slot — don't read card_id. Just treat as "they have a
+        // hidden bought-ready card", lightly negative.
+        score -= 0.15;
+      }
+    }
+  }
+  // Coin overflow penalty (Splendor caps at 10 gems).
+  int my_gems = 0;
+  for (int i = 0; i < 6; ++i) my_gems += d.player_gems[player][i];
+  if (my_gems > 10) score -= static_cast<double>(my_gems - 10) * 0.8;
+  return score;
+}
+
+template <int NPlayers>
+board_ai::HeuristicResult pick(
+    board_ai::IGameState& state,
+    const board_ai::IGameRules& rules,
+    std::uint64_t /*rng_seed*/) {
+  auto& s = board_ai::checked_cast<SplendorState<NPlayers>>(state);
+  auto legal = rules.legal_actions(state);
+  const int player = s.current_player();
+
+  board_ai::HeuristicResult result;
+  result.actions = legal;
+  result.scores.reserve(legal.size());
+
+  // Score each action via lookahead: apply action → eval from player's
+  // perspective → undo. SplendorRules provides do_action_fast + undo_action.
+  auto& mut_rules = const_cast<board_ai::IGameRules&>(rules);
+  for (ActionId a : legal) {
+    auto tok = mut_rules.do_action_fast(state, a);
+    double s_val = eval_position<NPlayers>(s.persistent.data(), player);
+    mut_rules.undo_action(state, tok);
+    result.scores.push_back(s_val);
+  }
+  return result;
+}
+
+}  // namespace splendor_heuristic
+
 template <int NPlayers>
 board_ai::GameBundle make_splendor(const std::string& game_id, std::uint64_t seed) {
   using Cfg = board_ai::splendor::SplendorConfig<NPlayers>;
@@ -473,9 +677,9 @@ board_ai::GameBundle make_splendor(const std::string& game_id, std::uint64_t see
   b.value_model = std::make_unique<board_ai::DefaultStateValueModel>();
   b.encoder = std::make_unique<board_ai::splendor::SplendorFeatureEncoder<NPlayers>>();
   b.belief_tracker = std::make_unique<board_ai::splendor::SplendorBeliefTracker<NPlayers>>();
-  b.stochastic_detector = board_ai::default_stochastic_detector;
   b.state_serializer = serialize_splendor<NPlayers>;
   b.action_descriptor = describe_splendor<NPlayers>;
+  b.heuristic_picker = splendor_heuristic::pick<NPlayers>;
   b.public_event_extractor = splendor_events::extract_events<NPlayers>;
   b.public_event_applier = splendor_events::apply_event<NPlayers>;
   b.initial_observation_extractor = splendor_events::extract_initial_observation<NPlayers>;

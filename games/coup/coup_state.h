@@ -74,9 +74,20 @@ template <int NPlayers>
 struct CoupConfig {
   static_assert(NPlayers >= 2 && NPlayers <= 4);
   static constexpr int kPlayers = NPlayers;
-  static constexpr int kPerPlayerFeatures = 18;
+  // Public per-player (13): alive, coins, inf>=1, inf>=2,
+  // revealed-character counts (5), active/target/blocker/challenger (4).
+  static constexpr int kPerPlayerPublicFeatures = 13;
+  // Private per-player (5): unrevealed-character counts of the player's
+  // own hand. Only the owner knows their unrevealed cards.
+  static constexpr int kPerPlayerPrivateFeatures = 5;
+  static constexpr int kPerPlayerFeatures =
+      kPerPlayerPublicFeatures + kPerPlayerPrivateFeatures;  // 18
   static constexpr int kGlobalFeatures = 21;
   static constexpr int kFeatureDim = kPerPlayerFeatures * NPlayers + kGlobalFeatures;
+  static constexpr int kPublicFeatureDim =
+      kPerPlayerPublicFeatures * NPlayers + kGlobalFeatures;
+  static constexpr int kPrivateFeatureDim =
+      kPerPlayerPrivateFeatures * NPlayers;
 };
 
 template <int NPlayers>
@@ -130,12 +141,13 @@ struct CoupState final : public CloneableState<CoupState<NPlayers>> {
   CoupState();
   void reset_with_seed(std::uint64_t seed) override;
   StateHash64 state_hash(bool include_hidden_rng) const override;
+  void hash_public_fields(Hasher& h) const override;
+  void hash_private_fields(int player, Hasher& h) const override;
   int current_player() const override;
   int first_player() const override;
   bool is_terminal() const override;
   int num_players() const override { return Cfg::kPlayers; }
   int winner() const override;
-  std::uint64_t rng_nonce() const override;
   bool is_turn_start() const override;
 };
 

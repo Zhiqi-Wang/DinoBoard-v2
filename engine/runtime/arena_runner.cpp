@@ -14,17 +14,13 @@ ArenaMatchResult run_arena_match(
     const std::vector<ArenaPlayerConfig>& player_configs,
     int max_game_plies,
     std::uint64_t match_seed,
-    TraversalLimiterFactory limiter_factory,
     IBeliefTracker* belief_tracker,
-    GameAdjudicator adjudicator) {
+    GameAdjudicator adjudicator,
+    PublicEventExtractor public_event_extractor,
+    InitialObservationExtractor initial_observation_extractor) {
   ArenaMatchResult result{};
   auto state = initial_state.clone_state();
   int ply = 0;
-
-  std::unique_ptr<search::INetMctsTraversalLimiter> limiter;
-  if (limiter_factory) {
-    limiter = limiter_factory();
-  }
 
   while (!state->is_terminal() && ply < max_game_plies) {
     const int player = state->current_player();
@@ -38,7 +34,11 @@ ArenaMatchResult run_arena_match(
     const search::IPolicyValueEvaluator& eval = evaluator_for_player(player);
 
     if (belief_tracker) {
-      belief_tracker->init(*state, player);
+      AnyMap init_obs;
+      if (initial_observation_extractor) {
+        init_obs = initial_observation_extractor(*state, player);
+      }
+      belief_tracker->init(player, init_obs);
     }
 
     search::NetMctsConfig mcts_cfg{};
@@ -46,7 +46,9 @@ ArenaMatchResult run_arena_match(
     mcts_cfg.c_puct = pcfg.c_puct;
     mcts_cfg.max_depth = pcfg.max_depth;
     mcts_cfg.value_clip = pcfg.value_clip;
-    mcts_cfg.traversal_limiter = limiter.get();
+    if (belief_tracker) {
+      mcts_cfg.root_belief_tracker = belief_tracker;
+    }
 
     if (pcfg.tail_solve_enabled && pcfg.tail_solver) {
       bool try_ts = false;
@@ -68,7 +70,6 @@ ArenaMatchResult run_arena_match(
         (static_cast<std::uint64_t>(ply) * kGoldenRatio64) ^ 0x243F6A8885A308D3ULL;
     mcts.search_root(*state, rules, value_model, eval, &stats, mcts_seed);
 
-    result.total_traversal_stops += stats.traversal_stops;
     const std::uint64_t action_seed = match_seed ^ (static_cast<std::uint64_t>(ply) * kGoldenRatio64);
     const ActionId chosen = search::select_action_from_visits(
         stats.root_actions, stats.root_action_visits, pcfg.temperature, action_seed, legal[0]);
@@ -78,8 +79,14 @@ ArenaMatchResult run_arena_match(
     std::unique_ptr<IGameState> state_before;
     if (belief_tracker) state_before = state->clone_state();
     rules.do_action_fast(*state, chosen);
-    if (belief_tracker) belief_tracker->observe_action(*state_before, chosen, *state);
-    if (limiter) limiter->on_ply_complete();
+    if (belief_tracker) {
+      PublicEventTrace evt;
+      if (public_event_extractor) {
+        evt = public_event_extractor(*state_before, chosen, *state, player);
+      }
+      belief_tracker->observe_public_event(
+          player, chosen, evt.pre_events, evt.post_events);
+    }
     ply += 1;
   }
 

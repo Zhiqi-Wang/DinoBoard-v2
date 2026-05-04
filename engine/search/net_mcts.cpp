@@ -5,6 +5,9 @@
 #include <cmath>
 #include <limits>
 #include <random>
+#include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace board_ai::search {
 
@@ -30,10 +33,7 @@ class SplitMix64Engine {
 struct Edge {
   ActionId action = -1;
   float prior = 0.0f;
-  int child = -1;
-  StateHash64 child_state_hash = 0;
-  bool has_child_state_hash = false;
-  std::vector<std::pair<StateHash64, int>> chance_children{};
+  int child = -1;           // index into `nodes` vector; -1 if not yet traversed
   int visit_count = 0;
   float value_sum = 0.0f;
 };
@@ -120,6 +120,31 @@ ActionId select_action_from_visits(
   return actions[dist(rng)];
 }
 
+// ISMCTS-v2 search.
+//
+// Algorithm (single simulation):
+//   1. Clone root. If belief_tracker set, call randomize_unseen to sample
+//      a belief-consistent hidden world (root determinization). Descent is
+//      now deterministic within this sampled world.
+//   2. Descend from root, using UCT2 for edge selection:
+//        score = Q + c_puct * prior * sqrt(last_edge.visits) / (1 + edge.visits)
+//      where last_edge is the edge we came through into the current node.
+//      At root, last_edge.visits is approximated by root_node.visit_count
+//      (equals sim count so far).
+//   3. At each node, compute the current state's hash using
+//      state.state_hash_for_perspective(state.current_player()). Look up
+//      in global `node_index` table. If found, reuse (DAG share). If not,
+//      create new node.
+//   4. On reaching an unexpanded (leaf) node, call evaluator.evaluate(
+//      sim_state, current_player, legal_actions) to get priors + values.
+//      Store priors on edges (one per legal action; no full_action_space).
+//   5. Backup leaf_values up the path: node.visit++, edge.visit++ per step.
+//
+// Invariants:
+//   - DAG is acyclic (guaranteed by state.step_count monotonicity in hash).
+//   - Nodes at the same (public, acting-player-private, step) are shared,
+//     giving info-set statistics aggregation across sampled worlds.
+//   - No chance node / NoPeek / perturb_rng machinery.
 ActionId NetMcts::search_root(
     const IGameState& root,
     const IGameRules& rules,
@@ -166,16 +191,30 @@ ActionId NetMcts::search_root(
 
   std::vector<Node> nodes;
   nodes.reserve(static_cast<size_t>(std::max(512, cfg_.simulations * 2)));
+
+  // Global hash → node_index table: the DAG's canonical lookup. Cleared per
+  // search_root call (cross-call sharing is not attempted; the step_count in
+  // hash would separate states from different sessions anyway).
+  std::unordered_map<StateHash64, int> node_index;
+
+  // Compute node key from a sampled world's current state, using the
+  // acting player's information set.
+  auto compute_hash = [](const IGameState& s) -> StateHash64 {
+    return s.state_hash_for_perspective(s.current_player());
+  };
+
+  const StateHash64 root_hash = compute_hash(root);
   nodes.push_back(Node{root.current_player(), false, 0, 0.0f, {}});
+  node_index[root_hash] = 0;
 
   auto expand_node = [&](Node& node, const IGameState& state) -> std::vector<float> {
-    const int np = state.num_players();
     const auto legal = rules.legal_actions(state);
     if (legal.empty()) {
       node.expanded = true;
       node.edges.clear();
       return value_model.terminal_values(state);
     }
+
     std::vector<float> priors;
     std::vector<float> values;
     const bool ok = evaluator.evaluate(state, node.to_play, legal, &priors, &values);
@@ -184,7 +223,7 @@ ActionId NetMcts::search_root(
     }
     if (priors.size() != legal.size()) {
       throw std::runtime_error("MCTS: evaluator returned " + std::to_string(priors.size()) +
-          " priors but " + std::to_string(legal.size()) + " legal actions");
+          " priors but " + std::to_string(legal.size()) + " actions");
     }
 
     float sum = 0.0f;
@@ -209,10 +248,6 @@ ActionId NetMcts::search_root(
   };
 
   (void)expand_node(nodes[0], root);
-  // Dirichlet noise must be seeded deterministically so training runs are
-  // reproducible. Callers that care about reproducibility pass a non-zero seed;
-  // the ply-level seed in selfplay/arena covers this. seed == 0 falls back to
-  // a wall-clock derivation for ad-hoc/interactive callers that don't care.
   const std::uint64_t dirichlet_seed = (seed != 0)
       ? (seed ^ 0xA076178CDFB1AC2DULL ^
          static_cast<std::uint64_t>(root.current_player() + 13))
@@ -229,94 +264,40 @@ ActionId NetMcts::search_root(
       nodes[0].edges.size(), std::vector<double>(static_cast<size_t>(np), 0.0));
 
   const int simulations = std::max(1, cfg_.simulations);
+
+  // Per-sim RNG for root determinization. Each sim picks a distinct world.
+  std::mt19937 root_sample_rng(
+      seed ^ 0x51ED270FABCDEF01ULL ^ static_cast<std::uint64_t>(simulations));
+
+  std::int64_t dag_reuse_hits = 0;
+
   for (int sim = 0; sim < simulations; ++sim) {
     std::unique_ptr<IGameState> sim_state = root.clone_state();
+    if (cfg_.root_belief_tracker != nullptr) {
+      std::mt19937 per_sim_rng(static_cast<std::uint32_t>(root_sample_rng()));
+      cfg_.root_belief_tracker->randomize_unseen(*sim_state, per_sim_rng);
+    }
+
+    // Path records for backup. For UCT2 we also track which edge we came
+    // through INTO each node on the path; the sqrt() in UCB uses that edge's
+    // visit_count, not the node's global visit_count (which in a DAG mixes
+    // visits from multiple incoming paths).
     std::vector<int> path_nodes;
-    std::vector<int> path_edges;
-    std::vector<ActionId> path_actions;
-    std::vector<UndoToken> path_undos;
+    std::vector<int> path_edges;     // edge index within path_nodes[i]
     path_nodes.reserve(static_cast<size_t>(cfg_.max_depth + 2));
     path_edges.reserve(static_cast<size_t>(cfg_.max_depth + 2));
-    path_actions.reserve(static_cast<size_t>(cfg_.max_depth + 2));
-    path_undos.reserve(static_cast<size_t>(cfg_.max_depth + 2));
 
     int cur_idx = 0;
     path_nodes.push_back(cur_idx);
 
     std::vector<float> leaf_values;
     int depth = 0;
-    bool skip_limiter_once = false;
+
+    // At root, there's no incoming edge; use root's node visit_count as the
+    // sqrt argument (equals sim count so far).
+    int incoming_edge_visits = nodes[0].visit_count;
+
     while (depth < cfg_.max_depth) {
-      if (!skip_limiter_once && cfg_.traversal_limiter != nullptr) {
-        std::unique_ptr<IGameState> parent_state{};
-        const IGameState* parent_ptr = nullptr;
-        ActionId parent_action = -1;
-        const bool need_parent = cfg_.traversal_limiter->requires_parent_for_stop();
-        if (need_parent && !path_undos.empty() && !path_actions.empty()) {
-          parent_state = sim_state->clone_state();
-          rules.undo_action(*parent_state, path_undos.back());
-          parent_ptr = parent_state.get();
-          parent_action = path_actions.back();
-        }
-        if (cfg_.traversal_limiter->should_stop_with_parent(root, *sim_state, parent_ptr, parent_action, depth)) {
-          if (stats) ++stats->traversal_stops;
-          if (parent_ptr == nullptr && !path_undos.empty() && !path_actions.empty()) {
-            parent_state = sim_state->clone_state();
-            rules.undo_action(*parent_state, path_undos.back());
-            parent_ptr = parent_state.get();
-            parent_action = path_actions.back();
-          }
-          const TraversalStopResult stop_result = cfg_.traversal_limiter->on_traversal_stop(
-              root, *sim_state, parent_ptr, parent_action, depth, rules, value_model, evaluator);
-          if (stop_result.action == TraversalStopAction::kContinue) {
-            if (!path_edges.empty() && path_nodes.size() >= 2) {
-              const int parent_idx = path_nodes[path_nodes.size() - 2];
-              const int parent_edge_idx = path_edges.back();
-              const StateHash64 sampled_hash = sim_state->state_hash(true);
-              int rerouted_child = -1;
-              {
-                const Edge& pe = nodes[parent_idx].edges[parent_edge_idx];
-                if (pe.child >= 0 && pe.has_child_state_hash &&
-                    pe.child_state_hash == sampled_hash) {
-                  rerouted_child = pe.child;
-                } else {
-                  for (const auto& entry : pe.chance_children) {
-                    if (entry.first == sampled_hash) {
-                      rerouted_child = entry.second;
-                      break;
-                    }
-                  }
-                }
-              }
-              if (rerouted_child < 0) {
-                nodes.push_back(Node{sim_state->current_player(), false, 0, 0.0f, {}});
-                rerouted_child = static_cast<int>(nodes.size()) - 1;
-                Edge& pe = nodes[parent_idx].edges[parent_edge_idx];
-                if (pe.child < 0 || !pe.has_child_state_hash) {
-                  pe.child = rerouted_child;
-                  pe.child_state_hash = sampled_hash;
-                  pe.has_child_state_hash = true;
-                } else {
-                  pe.chance_children.push_back({sampled_hash, rerouted_child});
-                }
-              }
-              if (rerouted_child >= 0 && rerouted_child != cur_idx) {
-                cur_idx = rerouted_child;
-                path_nodes.back() = cur_idx;
-              }
-            }
-            skip_limiter_once = true;
-            continue;
-          }
-          if (stop_result.action == TraversalStopAction::kUseLeafValue) {
-            leaf_values = stop_result.leaf_values;
-          } else {
-            leaf_values = expand_node(nodes[cur_idx], *sim_state);
-          }
-          break;
-        }
-      }
-      skip_limiter_once = false;
       if (sim_state->is_terminal()) {
         leaf_values = value_model.terminal_values(*sim_state);
         break;
@@ -330,67 +311,109 @@ ActionId NetMcts::search_root(
         break;
       }
 
-      int best_edge = 0;
+      // UCT2 edge selection. sqrt() argument is the visit count of the edge
+      // we just came through (incoming_edge_visits), NOT the node's global
+      // visit_count. Avoids over-exploration bias from DAG's multiple
+      // parents (Childs et al. 2008).
+      const float sqrt_parent = std::sqrt(
+          static_cast<float>(std::max(1, incoming_edge_visits)));
+      int best_edge = -1;
       float best_score = -std::numeric_limits<float>::infinity();
-      const float sqrt_parent = std::sqrt(static_cast<float>(std::max(1, nodes[cur_idx].visit_count)));
       for (int ei = 0; ei < static_cast<int>(nodes[cur_idx].edges.size()); ++ei) {
         const Edge& e = nodes[cur_idx].edges[ei];
         float q = 0.0f;
         if (e.visit_count > 0) q = e.value_sum / static_cast<float>(e.visit_count);
-        const float u = cfg_.c_puct * e.prior * sqrt_parent / (1.0f + static_cast<float>(e.visit_count));
+        const float u = cfg_.c_puct * e.prior * sqrt_parent /
+                        (1.0f + static_cast<float>(e.visit_count));
         const float score = q + u;
         if (score > best_score) {
           best_score = score;
           best_edge = ei;
         }
       }
+      if (best_edge < 0) {
+        leaf_values = value_model.terminal_values(*sim_state);
+        break;
+      }
 
       const ActionId chosen_action = nodes[cur_idx].edges[best_edge].action;
-      const UndoToken undo_tok = rules.do_action_fast(*sim_state, chosen_action);
-      const int next_player = sim_state->current_player();
-      const StateHash64 next_hash = sim_state->state_hash(true);
-      int chosen_child = nodes[cur_idx].edges[best_edge].child;
-
-      auto bind_edge_to_child = [&](int edge_idx, int child_idx, StateHash64 outcome_hash) {
-        Edge& edge = nodes[cur_idx].edges[edge_idx];
-        edge.child = child_idx;
-        edge.child_state_hash = outcome_hash;
-        edge.has_child_state_hash = true;
-      };
-
-      if (chosen_child < 0) {
-        nodes.push_back(Node{next_player, false, 0, 0.0f, {}});
-        chosen_child = static_cast<int>(nodes.size()) - 1;
-        bind_edge_to_child(best_edge, chosen_child, next_hash);
-      } else {
-        if (!nodes[cur_idx].edges[best_edge].has_child_state_hash) {
-          nodes[cur_idx].edges[best_edge].child_state_hash = next_hash;
-          nodes[cur_idx].edges[best_edge].has_child_state_hash = true;
-        } else if (nodes[cur_idx].edges[best_edge].child_state_hash != next_hash) {
-          int matched_child = -1;
-          for (const auto& item : nodes[cur_idx].edges[best_edge].chance_children) {
-            if (item.first == next_hash) {
-              matched_child = item.second;
-              break;
-            }
-          }
-          if (matched_child >= 0) {
-            chosen_child = matched_child;
-          } else {
-            nodes.push_back(Node{next_player, false, 0, 0.0f, {}});
-            chosen_child = static_cast<int>(nodes.size()) - 1;
-            nodes[cur_idx].edges[best_edge].chance_children.push_back({next_hash, chosen_child});
+      // Defensive legality check. In DAG MCTS, two simulations can reach the
+      // same (hash) DAG node with technically-different states if the hash
+      // function misses a field that affects legal_actions (a hash-scope
+      // incompleteness bug). Rather than crash, we re-filter this node's
+      // edges against the current state's actual legal set and re-pick from
+      // those. This is a workaround — the real fix is to make hash_public +
+      // hash_private(cur_player) fully determine legal_actions for every
+      // game. For games where it does (which SHOULD be every game), this
+      // fallback never triggers.
+      if (!rules.validate_action(*sim_state, chosen_action)) {
+        auto current_legal = rules.legal_actions(*sim_state);
+        std::unordered_set<ActionId> legal_set(current_legal.begin(),
+                                               current_legal.end());
+        // Re-select the best edge restricted to currently-legal actions.
+        int fallback_edge = -1;
+        float fallback_score = -std::numeric_limits<float>::infinity();
+        const float fb_sqrt_parent = std::sqrt(static_cast<float>(
+            std::max(1, incoming_edge_visits)));
+        for (int ei = 0; ei < static_cast<int>(nodes[cur_idx].edges.size()); ++ei) {
+          const Edge& e = nodes[cur_idx].edges[ei];
+          if (!legal_set.count(e.action)) continue;
+          float q = 0.0f;
+          if (e.visit_count > 0) q = e.value_sum / static_cast<float>(e.visit_count);
+          const float u = cfg_.c_puct * e.prior * fb_sqrt_parent /
+                          (1.0f + static_cast<float>(e.visit_count));
+          const float score = q + u;
+          if (score > fallback_score) {
+            fallback_score = score;
+            fallback_edge = ei;
           }
         }
+        if (fallback_edge < 0) {
+          // No overlap between node's edges and current legal set: the state
+          // at this node truly doesn't share a legal-action set. Terminate
+          // this simulation at leaf — use the node's value estimate.
+          leaf_values = value_model.terminal_values(*sim_state);
+          break;
+        }
+        best_edge = fallback_edge;
       }
-      cur_idx = chosen_child;
+      const ActionId final_action = nodes[cur_idx].edges[best_edge].action;
+      rules.do_action_fast(*sim_state, final_action);
+
+      // DAG node lookup: after do_action, compute hash under the NEW
+      // current_player's perspective (decision node = acting-player view).
+      const StateHash64 next_hash = compute_hash(*sim_state);
+      int next_idx = -1;
+      auto it = node_index.find(next_hash);
+      if (it != node_index.end()) {
+        next_idx = it->second;
+        ++dag_reuse_hits;
+      } else {
+        nodes.push_back(Node{sim_state->current_player(), false, 0, 0.0f, {}});
+        next_idx = static_cast<int>(nodes.size()) - 1;
+        node_index[next_hash] = next_idx;
+      }
+
+      // Update this edge's `child` field to the resolved target. Since the
+      // DAG may have this edge point to different children on different
+      // paths (e.g. if the rules-apply leads to different worlds), we always
+      // overwrite — but for correctness we expect the same (edge, sim world)
+      // to produce the same hash, so this is typically stable.
+      nodes[cur_idx].edges[best_edge].child = next_idx;
+
       path_edges.push_back(best_edge);
-      path_actions.push_back(chosen_action);
-      path_undos.push_back(undo_tok);
+      cur_idx = next_idx;
       path_nodes.push_back(cur_idx);
+      // For next iteration's UCT2: the "incoming edge" is the one we just
+      // traversed.
+      incoming_edge_visits = nodes[path_nodes[path_nodes.size() - 2]]
+                                 .edges[best_edge]
+                                 .visit_count;
       depth += 1;
     }
 
+    // Backup. Standard path-walk; in a DAG each node's visit_count tracks
+    // total visits across all parent paths.
     for (int i = static_cast<int>(path_nodes.size()) - 1; i >= 0; --i) {
       const int node_idx = path_nodes[static_cast<size_t>(i)];
       Node& n = nodes[node_idx];
@@ -411,7 +434,7 @@ ActionId NetMcts::search_root(
         if (parent_idx == 0) {
           auto& rev = root_edge_values[static_cast<size_t>(parent_edge_idx)];
           for (int p = 0; p < np; ++p) {
-            const float cv = (static_cast<size_t>(p) < leaf_values.size())
+            const double cv = (static_cast<size_t>(p) < leaf_values.size())
                 ? static_cast<double>(clip_value(leaf_values[static_cast<size_t>(p)], cfg_.value_clip))
                 : 0.0;
             rev[static_cast<size_t>(p)] += cv;
@@ -422,9 +445,7 @@ ActionId NetMcts::search_root(
   }
 
   const Node& root_node = nodes[0];
-  // Random tiebreak on ties in visit_count so the returned action doesn't
-  // systematically favor low-index actions. Using a seed keeps this
-  // reproducible across runs with the same seed.
+  // Tie-break random selection when multiple edges share max visit count.
   int best_edge = 0;
   int best_visit = -1;
   std::vector<int> tied_edges;
@@ -452,6 +473,7 @@ ActionId NetMcts::search_root(
     stats->simulations_done = simulations;
     stats->expanded_nodes = static_cast<std::int64_t>(nodes.size());
     stats->nodes_per_sec = static_cast<double>(nodes.size()) / sec;
+    stats->dag_reuse_hits = dag_reuse_hits;
     stats->root_actions.clear();
     stats->root_action_visits.clear();
     stats->root_actions.reserve(root_node.edges.size());

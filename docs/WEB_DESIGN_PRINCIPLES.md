@@ -55,19 +55,59 @@ describeTransition(prevState, newState, actionInfo, actionId) → [AnimStep] | n
 
 | type | 参数 | 说明 |
 |------|------|------|
-| `fly` | `from`, `to`, `createElement`, `hideFrom`, `onComplete`, `duration` | 创建飞行元素从 A 飞到 B |
+| `fly` | `from`, `to`, `createElement`, `width`/`height`, `onStart`, `hideFrom`, `onComplete`, `duration` | 创建飞行元素从 A 飞到 B |
+| `flyGroup` | `flights[]` | 一组 fly 并行播放（Promise.all） |
+| `group` | `children[]` | 一组任意 step 并行播放 |
+| `popup` | `target`, `content`, `className`, `duration` | 数字/文字气泡浮现再淡出（得分、扣分等） |
+| `run` | `fn` | 运行 DOM mutation 回调（阶段间改 DOM） |
 | `fadeOut` | `target`, `duration` | 淡出一个 DOM 元素 |
 | `highlight` | `target`, `className`, `duration` | 短暂高亮一个元素 |
 | `pause` | `duration` | 等待一段时间 |
 
 ### 中间状态维护
 
-一个动作可能产生多步动画（如购买卡牌 = 宝石飞回 + 卡牌飞走）。每步动画结束后，上一步的 DOM 变化需要保持可见，否则视觉上会乱套。框架提供两个机制：
+一个动作可能产生多步动画（如购买卡牌 = 宝石飞回 + 卡牌飞走）。每步动画结束后，上一步的 DOM 变化需要保持可见，否则视觉上会乱套。框架提供三个机制：
 
+- **`onStart(srcEl)` 回调**：fly 开始时把源 DOM 变成"取走后"的样子（参考 §3.5 的坑点），后续看到的是新状态
 - **`hideFrom: true`**：fly 结束后源元素设为 `visibility: hidden`（保持布局占位），后续步骤看到"东西已经不在了"
 - **`onComplete` 回调**：fly 结束后更新 DOM（比如修改计数器文字），后续步骤看到的数字是对的
 
 所有动画播完后框架自动恢复隐藏元素，然后重渲染到新状态。
+
+### 3.5 重要陷阱：不要用 hideFrom 隐藏"带空态背景"的容器
+
+**踩过的坑**：Azul 的中心池格子有两个逻辑状态——有砖时显示彩色砖块、没砖时显示半透明的"空位幽灵砖"表示"这里本来可以放这种颜色的砖"。两者渲染到同一个 `.center-slot` 容器里。
+
+如果飞砖动画用 `hideFrom: true` 隐藏 `.center-slot`，`visibility: hidden` 会把整个容器(包括空态背景)一起藏起来,画面上用户看到的是"格子消失了一个洞",而不是"砖被取走了,空位还在"。
+
+**正确做法**：
+
+- **容器有明确空态背景时,用 `onStart` 回调而不是 `hideFrom`**。`onStart(srcEl)` 会在 fly 开始时把源 DOM 改成"取走后"的样子(比如清空 innerHTML 再加一个幽灵 tile),sprite 再从源位置飞走。视觉上容器位置不动、背景还在、只有实体砖飞走了。
+- **容器没有空态背景(例如工厂 tile 格子堆)用 `hideFrom` 没问题**。因为取走后容器确实应该整体消失/变空,`visibility: hidden` 的效果和最终 re-render 后的效果一致。
+
+示例(Azul 中心槽):
+```js
+flights.push({
+  from: '[data-center-slot="' + color + '"]',
+  to: patternRowSelector,
+  createElement: () => makeFlyingTile(color),
+  onStart: (slotEl) => {
+    // 变成空态:清内容,加 .empty class,加幽灵 tile
+    slotEl.innerHTML = '';
+    slotEl.classList.add('empty');
+    const ghost = document.createElement('div');
+    ghost.className = 'tile ' + TILE_CLASSES[color];
+    slotEl.appendChild(ghost);
+  },
+  // 不用 hideFrom
+});
+```
+
+**判断流程**：
+1. 源 DOM 在"东西被取走"后应该还显示某种背景(空格、虚线轮廓、幽灵)吗？
+   - 是 → `onStart` 改成背景态
+   - 否 → `hideFrom: true` 够了
+2. 源 DOM 被取走后应该完全消失(无布局占位)吗？那用 fadeOut 或让 re-render 收掉,不要用 hideFrom。
 
 ### 与 AI 思考的配合
 

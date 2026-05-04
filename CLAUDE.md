@@ -19,17 +19,33 @@
 
 ## AI Pipeline Independence from Game State
 
-- The entire AI decision pipeline — belief tracking, feature encoding, MCTS search — must work solely from the observation history (action sequence + publicly visible events). It must NEVER depend on reading the true game state's hidden fields.
-- Rationale: the engine must support an API mode where an external game server runs the ground truth and the AI only receives observations ("player X played action Y"). There is no game state object to read — only what a real player sitting at the table would know.
-- This principle applies to every component in the AI chain:
-  - **Belief tracker**: maintains its own model of what is known/unknown, updated solely through `observe_action()`. `randomize_unseen()` reconstructs the unseen pool from accumulated observations, not from the true state.
-  - **Feature encoder**: when encoding other players' hidden information (e.g., opponent's face-down reserved cards), must encode what the current perspective player *knows* (via belief tracker or public info), not what the state object contains.
-  - **MCTS search**: operates on worlds constructed by `randomize_unseen`, which are belief-consistent hypotheticals, not the true game state.
-- This applies to ALL games: Splendor deck contents, Azul bag contents, opponent hands, or any future game's hidden information. The belief tracker is the player's memory; the game state is the server's truth.
-- **Validation is mandatory, not optional**. Code review alone cannot prove separation — a single `checked_cast` followed by a hidden-field read could slip through unnoticed. The ONLY way to certify that a game's AI pipeline respects this principle is by passing the two-layer AI API test:
-  - `tests/test_ai_api_separation.py::test_full_game_via_api[<game>]` — API contract carries no state fields in or out.
-  - `tests/test_api_belief_matches_selfplay.py::*[<game>]` (random games only) — AI session initialized with a DIFFERENT seed than ground truth must produce the same belief / public state / legal actions after replaying the observation stream. If the AI secretly reads ground truth's state anywhere, at least one of these three assertions diverges.
-- A new game isn't accepted until these pass. See `docs/GAME_DEVELOPMENT_GUIDE.md §17` for the event protocol and acceptance workflow.
+The AI decision pipeline — belief tracking, feature encoding, MCTS search — must work solely from observation history. It NEVER reads ground truth's hidden fields.
+
+**Architecture** (post-ISMCTS-v2 refactor, see `docs/plans/ISMCTS_REFACTOR_PLAN.md`):
+
+- **Ground truth** maintains game progress (our C++ engine, external API, or a physical tabletop game). Ground truth advances itself and sends messages to the AI. The AI advances its own dataset + tracker from these messages.
+- **AI dataset** splits into **public fields** (all players see) and **private fields per player** (only that player sees). Declared via:
+  ```cpp
+  virtual void hash_public_fields(Hasher&) const = 0;
+  virtual void hash_private_fields(int player, Hasher&) const = 0;
+  ```
+  Framework derives `state_hash_for_perspective(p) = hash(public + private_of_p)`. The same partition drives encoder feature extraction.
+- **Tracker** maintains what a given perspective player has learned through legal observation. `init(perspective, initial_observation)` and `observe_public_event(actor, action, pre_events, post_events)` take NO `IGameState*` — the tracker physically cannot peek at truth.
+- **MCTS** uses root determinization: each simulation begins with `tracker->randomize_unseen(sim_state, rng)` — tracker fills certainties (e.g. known opp hand from Priest peek), rest of unseen pool sampled per tracker's policy (uniform for simple cases; heuristic weighted for bluff-heavy games like Coup where claim/challenge history biases opp role priors), remainder shuffled into deck. After sampling, descent is fully deterministic within that world.
+- **Node hashing in MCTS** uses `state_hash_for_perspective(state.current_player())` — each decision node is keyed by the acting player's information set. This forms a **DAG** (transpositions reached by different paths share nodes via a global `hash → node_index` table).
+- **DAG acyclicity** is guaranteed structurally by `IGameState::step_count` — a framework-provided counter that increments on every `do_action_fast`, included in public hash. No two states in the DAG share a hash unless they have the same step count.
+- **UCB** uses UCT2 (DAG-aware): the `sqrt(parent.visit_count)` term uses the visit count of the specific incoming edge traversed in this simulation, not the DAG node's global visit count. Avoids over-exploration bias from multi-parent aggregation.
+- **Encoder**: extracts features only from `public_fields + current_player's private_fields`. The public/private partition is the single source of truth for both hash and encoder scope — they stay aligned structurally.
+
+**Validation** (mandatory for every game, enforced in CI):
+
+- `tests/test_ai_api_separation.py::test_full_game_via_api[<game>]` — the API carries no state fields in/out. The AI drives a full game from observations alone.
+- `tests/test_api_belief_matches_selfplay.py::*[<game>]` (stochastic games) — AI session seeded differently from ground truth produces identical belief + public state + legal actions after the same observation stream.
+- `tests/test_api_mcts_policy_invariance.py::*[<game>]` — MCTS visit distribution on the same observation history is identical across selfplay and API paths. If the AI secretly reads truth, distributions diverge.
+- `tests/test_encoder_respects_hash_scope.py::*[<game>]` — encoder output is bit-equal when opp private changes but (public + own private) stays the same.
+- `tests/test_dag_acyclic.py::*[<game>]` — no cycles in the MCTS DAG, asserted via step_count monotonicity.
+
+**No chance nodes**: physical randomness (deck draws, dice) is handled entirely by root determinization — different simulations sample different worlds, and different observer-visible outcomes automatically produce different hashes → different DAG nodes. No special chance-node machinery (NoPeek / traversal limiter / `chance_outcomes` / afterstate cap / `stochastic_detector`) exists in the framework. Removed in the ISMCTS-v2 refactor.
 
 ## Value Head / Multiplayer
 
@@ -64,6 +80,6 @@ When implementing a new feature or fixing a bug, update documentation immediatel
 - **README.md** — keep concise; only mention the feature exists, don't explain implementation details.
 - **docs/GAME_FEATURES_OVERVIEW.md** — high-level "what's available" for developers. Training pipeline, search, decision-making, training enhancements, eval, web frontend, randomness handling, optional component reference, config reference, and new game development steps. Start here for a quick overview of what the framework can do.
 - **docs/GAME_DEVELOPMENT_GUIDE.md** — detailed implementation guide. Covers IGameState, IGameRules, IFeatureEncoder, GameBundle registration, GameRegistrar patterns, game.json config format (all fields), CMake/setup.py build integration, all 12 optional components with signatures and examples, feature encoding best practices, and web frontend integration (createApp API, ctx/gameState objects, common.js utilities). This is the single source of truth for "how to add a new game."
-- **docs/KNOWN_ISSUES.md** — bug postmortems and design trade-off records. BUG-001 through BUG-020 covers every shipped regression: tail solver TT flags, draw z-value, train-eval action space mismatch, FilteredRulesWrapper const_cast, replay buffer utilization, feature encoding pipeline bug, Splendor temperature schedule, replay buffer loss, ONNX silent degradation, model export order, z_values incomplete, legal mask filter, belief tracker peeking, adjudicator z_values + 3p+ evaluator, 2p-hardcoded multiplayer paths, pipeline stats-key mismatch. Plus general pitfalls and design decisions. Read this before writing new game logic or modifying the pipeline.
+- **docs/KNOWN_ISSUES.md** — bug postmortems and design trade-off records. BUG-001 through BUG-022 covers every shipped regression: tail solver TT flags, draw z-value, train-eval action space mismatch, FilteredRulesWrapper const_cast, replay buffer utilization, feature encoding pipeline bug, Splendor temperature schedule, replay buffer loss, ONNX silent degradation, model export order, z_values incomplete, legal mask filter, belief tracker peeking, adjudicator z_values + 3p+ evaluator, 2p-hardcoded multiplayer paths, pipeline stats-key mismatch, fly animation inheriting container size + sequential playback, cancel_pipeline side-effect wiping precompute cache. Plus general pitfalls and design decisions. Read this before writing new game logic or modifying the pipeline.
 - **docs/NEW_GAME_TEST_GUIDE.md** — step-by-step verification checklist for new game implementations. 9 steps: registration + config consistency, GameSession interaction, do/undo consistency, feature encoding (BUG-007 regression), selfplay sample integrity, ONNX round-trip, training tensor validation, optional component verification (heuristic, tail solver, filter, adjudicator, auxiliary scorer, hidden info), and multiplayer variants. Includes instructions for joining the existing 600+ parametrized test suite.
 - **docs/devlog/YYYY-MM-DD.md** — daily development log. Record what was implemented, key decisions made, config changes, and training observations. Keep entries concise and factual.

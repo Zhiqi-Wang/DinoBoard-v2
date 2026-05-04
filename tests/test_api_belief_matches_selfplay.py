@@ -35,7 +35,7 @@ from conftest import get_test_model
 
 # Games that have a public_event_extractor registered. Parameterize over
 # these. As more games implement the protocol, add them here.
-GAMES_WITH_EVENT_PROTOCOL = ["azul", "splendor", "loveletter"]
+GAMES_WITH_EVENT_PROTOCOL = ["azul", "splendor", "loveletter", "coup"]
 
 
 def _apply_trace_step(api_gs, step: dict) -> None:
@@ -166,6 +166,13 @@ def test_api_public_state_matches_after_trace(game_id):
             # and drawn_card are perspective-private. We check the `players`
             # array but have to exclude hand/drawn_card for non-perspective
             # players.
+        ],
+        "coup": [
+            "current_player", "is_terminal", "winner", "num_players",
+            "ply", "stage", "active_player", "declared_action",
+            "action_target", "blocker", "challenger", "deck_size",
+            # players[*].alive, .coins, and .influences[].revealed are
+            # public. Hidden: unrevealed influence character.
         ],
     }[game_id]
 

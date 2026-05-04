@@ -11,6 +11,18 @@
  *
  * Step types:
  *   fly       — move a floating element from one position to another
+ *   flyGroup  — run multiple fly sub-flights in PARALLEL (all start and
+ *               end together, same total duration as a single fly)
+ *   group     — run arbitrary child steps in PARALLEL (generalizes
+ *               flyGroup to any mix of fly/popup/highlight)
+ *   popup     — show a floating text or element at a target location that
+ *               floats up and fades out (e.g. "+5" score pops on a wall
+ *               cell). Target rect is captured when the step starts; the
+ *               target's later re-render doesn't move the popup.
+ *   run       — invoke an arbitrary callback to mutate the DOM between
+ *               other animation steps (e.g. show an intermediate "pattern
+ *               row filled" state in Azul's round-end settlement before
+ *               the subsequent pattern→wall flights start).
  *   fadeOut   — fade an existing DOM element to transparent
  *   highlight — briefly add a CSS class to an element
  *   pause     — wait for a duration (for sequencing)
@@ -20,11 +32,40 @@
  *   to           — CSS selector or HTMLElement (end position)
  *   createElement — () => HTMLElement (visual for the flying object)
  *   duration     — ms (default 350)
- *   hideFrom     — if true, source element becomes invisible after flight
- *                  (keeps layout; next steps see "it's gone")
+ *   width/height — optional explicit size for the flying element. When
+ *                  omitted, the source element's rect size is used. Use
+ *                  this when `from` resolves to a container bigger than
+ *                  the logical "thing flying" (e.g. a factory disc vs. a
+ *                  single tile).
+ *   onStart(srcEl) — optional callback invoked AFTER the source rect is
+ *                  captured and the flying sprite is created, but
+ *                  BEFORE the sprite animates. Use this to transform
+ *                  the source DOM into its "post-take" representation
+ *                  (e.g. show an empty-slot ghost where the tile was).
+ *                  Preferred over `hideFrom: true` when the source is a
+ *                  container with a meaningful empty-state background
+ *                  — hiding the whole container also hides that
+ *                  background, which users read as "the slot broke"
+ *                  rather than "the tile was taken". (See Web design
+ *                  principles doc for the "don't hide a container to
+ *                  hide its contents" rule.)
+ *   hideFrom     — if true, source element becomes invisible for the
+ *                  rest of the transition (visibility:hidden, keeps
+ *                  layout). Simpler than onStart but hides the whole
+ *                  source including any empty-state background. Use
+ *                  only when the source has no meaningful empty state
+ *                  to preserve (e.g. a specific tile with no ghost
+ *                  backing, or a factory disc whose visible-empty
+ *                  state naturally appears at re-render).
  *   onComplete   — optional callback after flight finishes, for updating
  *                  DOM text (e.g. decrementing a counter) so subsequent
  *                  steps see the intermediate visual state
+ *
+ * flyGroup step fields:
+ *   flights       — array of fly-step objects (without the `type` field).
+ *                   All are launched simultaneously and awaited together.
+ *   The flyGroup itself has no duration; it finishes when the slowest
+ *   flight finishes.
  */
 
 const DEFAULT_DURATION = 350;
@@ -81,10 +122,71 @@ async function executeStep(overlay, step, hidden) {
   if (!step || !step.type) return;
   switch (step.type) {
     case 'fly': return stepFly(overlay, step, hidden);
+    case 'flyGroup': return stepFlyGroup(overlay, step, hidden);
+    case 'group': return stepGroup(overlay, step, hidden);
+    case 'popup': return stepPopup(overlay, step);
+    case 'run': return stepRun(step);
     case 'fadeOut': return stepFadeOut(step);
     case 'highlight': return stepHighlight(step);
     case 'pause': return sleep(step.duration || 200);
   }
+}
+
+async function stepRun(step) {
+  if (typeof step.fn === 'function') step.fn();
+}
+
+async function stepFlyGroup(overlay, step, hidden) {
+  if (!step.flights || !step.flights.length) return;
+  await Promise.all(
+    step.flights.map(flight =>
+      stepFly(overlay, flight, hidden).catch(e => {
+        console.warn('[anim] flight in group skipped:', e);
+      })
+    )
+  );
+}
+
+async function stepGroup(overlay, step, hidden) {
+  if (!step.children || !step.children.length) return;
+  await Promise.all(
+    step.children.map(child =>
+      executeStep(overlay, child, hidden).catch(e => {
+        console.warn('[anim] group child skipped:', e);
+      })
+    )
+  );
+}
+
+async function stepPopup(overlay, step) {
+  const rect = getRect(step.target);
+  if (!rect) return;
+  const dur = step.duration || 900;
+
+  const el = document.createElement('div');
+  el.className = 'anim-popup' + (step.className ? (' ' + step.className) : '');
+  if (step.content instanceof HTMLElement) {
+    el.appendChild(step.content);
+  } else {
+    el.textContent = String(step.content != null ? step.content : '');
+  }
+
+  const w = step.width || 60;
+  const h = step.height || 28;
+  Object.assign(el.style, {
+    position: 'fixed',
+    left: (rect.left + rect.width / 2 - w / 2) + 'px',
+    top: (rect.top + rect.height / 2 - h / 2) + 'px',
+    width: w + 'px',
+    height: h + 'px',
+    pointerEvents: 'none',
+    zIndex: '10002',
+    // Driven by the anim-popup keyframes in common.css.
+    animationDuration: dur + 'ms',
+  });
+  overlay.appendChild(el);
+  await sleep(dur);
+  el.remove();
 }
 
 async function stepFly(overlay, step, hidden) {
@@ -103,12 +205,24 @@ async function stepFly(overlay, step, hidden) {
   }
   if (!flyer) return;
 
+  // Size: caller-specified width/height wins (for when `from` is a
+  // bigger container than the logical thing flying). Otherwise inherit
+  // from source rect so the default case still works for Splendor etc.
+  const w = step.width != null ? step.width : fromRect.width;
+  const h = step.height != null ? step.height : fromRect.height;
+  // Center the flyer on the source/destination rects rather than
+  // top-left-aligning. Matters when the flyer is smaller than the rect.
+  const startLeft = fromRect.left + fromRect.width / 2 - w / 2;
+  const startTop = fromRect.top + fromRect.height / 2 - h / 2;
+  const endLeft = toRect.left + toRect.width / 2 - w / 2;
+  const endTop = toRect.top + toRect.height / 2 - h / 2;
+
   Object.assign(flyer.style, {
     position: 'fixed',
-    left: fromRect.left + 'px',
-    top: fromRect.top + 'px',
-    width: fromRect.width + 'px',
-    height: fromRect.height + 'px',
+    left: startLeft + 'px',
+    top: startTop + 'px',
+    width: w + 'px',
+    height: h + 'px',
     transition: `left ${dur}ms ease-in-out, top ${dur}ms ease-in-out`,
     pointerEvents: 'none',
     zIndex: '10001',
@@ -116,11 +230,24 @@ async function stepFly(overlay, step, hidden) {
   });
   overlay.appendChild(flyer);
 
+  // Hide the source NOW (not after the flight) so the animation reads as
+  // "this thing moved there" rather than "a copy flew while the original
+  // stayed, then popped out". We capture the source rect above before
+  // hiding so the flight still starts at the correct position.
+  const srcEl = resolveEl(step.from);
+  if (step.onStart && srcEl) {
+    try { step.onStart(srcEl); } catch (e) { console.warn('[anim] onStart failed:', e); }
+  }
+  if (step.hideFrom && srcEl) {
+    srcEl.style.visibility = 'hidden';
+    hidden.push(srcEl);
+  }
+
   await new Promise(resolve => {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        flyer.style.left = toRect.left + 'px';
-        flyer.style.top = toRect.top + 'px';
+        flyer.style.left = endLeft + 'px';
+        flyer.style.top = endTop + 'px';
         resolve();
       });
     });
@@ -128,14 +255,6 @@ async function stepFly(overlay, step, hidden) {
 
   await sleep(dur + 20);
   flyer.remove();
-
-  if (step.hideFrom) {
-    const srcEl = resolveEl(step.from);
-    if (srcEl) {
-      srcEl.style.visibility = 'hidden';
-      hidden.push(srcEl);
-    }
-  }
 
   if (step.onComplete) {
     try { step.onComplete(); } catch (e) { console.warn('[anim] onComplete failed:', e); }

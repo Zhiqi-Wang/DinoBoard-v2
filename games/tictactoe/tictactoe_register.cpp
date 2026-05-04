@@ -35,6 +35,18 @@ AnyMap describe_ttt(board_ai::ActionId a) {
   };
 }
 
+// Uniform-weight heuristic: all legal actions equally likely. Used by the
+// "heuristic" difficulty on the web UI — not meant as a strong opponent,
+// just a fast baseline that never crashes and plays plausibly-legal moves.
+board_ai::HeuristicResult heuristic_random_ttt(
+    board_ai::IGameState& state, const board_ai::IGameRules& rules, std::uint64_t /*rng_seed*/) {
+  auto legal = rules.legal_actions(state);
+  board_ai::HeuristicResult result;
+  result.actions = legal;
+  result.scores.assign(legal.size(), 1.0);
+  return result;
+}
+
 board_ai::GameRegistrar reg("tictactoe", [](std::uint64_t seed) {
   board_ai::GameBundle b;
   b.game_id = "tictactoe";
@@ -46,6 +58,7 @@ board_ai::GameRegistrar reg("tictactoe", [](std::uint64_t seed) {
   b.encoder = std::make_unique<board_ai::tictactoe::TicTacToeFeatureEncoder>();
   b.state_serializer = serialize_ttt;
   b.action_descriptor = describe_ttt;
+  b.heuristic_picker = heuristic_random_ttt;
   return b;
 });
 }  // namespace

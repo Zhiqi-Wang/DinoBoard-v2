@@ -12,6 +12,7 @@ AzulState<NPlayers>::AzulState() {
 
 template <int NPlayers>
 void AzulState<NPlayers>::reset_with_seed(std::uint64_t seed) {
+  this->step_count_ = 0;
   current_player_ = 0;
   game_first_player_ = 0;
   first_player_next_round = 0;
@@ -167,6 +168,45 @@ StateHash64 AzulState<NPlayers>::state_hash(bool include_hidden_rng) const {
     hash_combine(h,static_cast<std::size_t>(rng_salt));
   }
   return static_cast<StateHash64>(h);
+}
+
+template <int NPlayers>
+void AzulState<NPlayers>::hash_public_fields(Hasher& h) const {
+  // Azul is symmetric-random but fully PUBLIC with respect to composition:
+  // everyone sees factory contents, center pile, each player's board, and
+  // knows the bag composition derivably (bag = all tiles − placed − discarded).
+  // The only thing nobody knows is the future draw ORDER, which is not a
+  // field in state — it's randomness resolved at sample_is_world time.
+  h.add(current_player_);
+  h.add(first_player_next_round);
+  h.add(winner_ + 1);
+  h.add(round_index);
+  h.add(terminal ? 1 : 0);
+  h.add(first_player_token_in_center ? 1 : 0);
+  h.add(shared_victory ? 1 : 0);
+  for (int s : scores) h.add(s);
+  for (const auto& fac : factories) {
+    for (std::uint8_t c : fac) h.add(c);
+  }
+  for (std::uint8_t c : center) h.add(c);
+  h.add(bag.size());
+  for (std::int8_t t : bag) h.add(t + 1);
+  h.add(box_lid.size());
+  for (std::int8_t t : box_lid) h.add(t + 1);
+  for (const auto& p : players) {
+    for (std::uint8_t len : p.line_len) h.add(len);
+    for (std::int8_t color : p.line_color) h.add(color + 1);
+    for (std::uint8_t m : p.wall_mask) h.add(m);
+    h.add(p.floor_count);
+    for (std::int8_t f : p.floor) h.add(f + 1);
+    h.add(p.score);
+  }
+}
+
+template <int NPlayers>
+void AzulState<NPlayers>::hash_private_fields(int /*player*/, Hasher& /*h*/) const {
+  // Azul has no non-symmetric private info. Bag composition is
+  // deterministically derivable from public placements; only order is random.
 }
 
 template class AzulState<2>;

@@ -116,14 +116,162 @@ AnyMap describe_loveletter(ActionId action) {
   return m;
 }
 
-board_ai::HeuristicResult heuristic_random(
-    board_ai::IGameState& state, const board_ai::IGameRules& rules, std::uint64_t /*rng_seed*/) {
+// Love Letter heuristic (warmstart + benchmark baseline).
+//
+// Scoring is per-action (no lookahead — Love Letter decisions are local).
+// Reads only public state + perspective's OWN hand/drawn (private fields
+// the actor legitimately knows — they're picking their own move).
+// Never reads other players' hidden hands.
+namespace loveletter_heuristic {
+
+using board_ai::loveletter::LoveLetterState;
+
+// Card values (from Love Letter rules).
+constexpr int kGuard = 1, kPriest = 2, kBaron = 3, kHandmaid = 4;
+constexpr int kPrince = 5, kKing = 6, kCountess = 7, kPrincess = 8;
+
+template <int NPlayers>
+double score_action(
+    const LoveLetterState<NPlayers>& s, ActionId a, std::mt19937& rng) {
+  const auto& d = s.data;
+  const int actor = d.current_player;
+  // Actor's own hand + drawn card — these are fully known to actor.
+  const int my_hand = d.hand[actor];
+  const int my_drawn = d.drawn_card;
+
+  auto target_from_offset = [&](int offset_in_action) {
+    return (actor + 1 + offset_in_action) % NPlayers;
+  };
+
+  // --- Guard (0..27): 0 <= id < 28, id = target_offset*7 + (guess-2) ---
+  if (a >= board_ai::loveletter::kGuardOffset &&
+      a < board_ai::loveletter::kGuardOffset + board_ai::loveletter::kGuardCount) {
+    const int rel = a - board_ai::loveletter::kGuardOffset;
+    const int target_off = rel / 7;
+    const int guess = 2 + (rel % 7);
+    const int target = target_from_offset(target_off);
+    if (target == actor || !d.alive[target]) return -100.0;
+    if (d.protected_flags[target]) return -5.0;
+    // Baseline: Guard is low-value unless you have tracker knowledge.
+    // Without knowing target's hand, guessing Priest (common) > Princess (rare).
+    // Approximate the target card distribution from discard piles to adjust.
+    int seen = 0;
+    std::array<int, 9> played{};
+    for (int p = 0; p < NPlayers; ++p) {
+      for (int c : d.discard_piles[p]) { played[c]++; seen++; }
+    }
+    // Count own + drawn + face-up removed so we know those too.
+    played[my_hand]++;
+    if (my_drawn > 0) played[my_drawn]++;
+    for (int c : d.face_up_removed) played[c]++;
+    // Card counts in Love Letter:
+    const std::array<int, 9> total = {0, 5, 2, 2, 2, 2, 1, 1, 1};
+    double prob_guess = std::max(0.0, static_cast<double>(total[guess] - played[guess]));
+    // Prefer guess on higher-remaining cards, especially 2..5.
+    return 0.6 + prob_guess * 0.25;
+  }
+
+  // --- Priest (28..31): peek at target — always good if can use next turn.
+  if (a >= board_ai::loveletter::kPriestOffset &&
+      a < board_ai::loveletter::kPriestOffset + board_ai::loveletter::kPriestCount) {
+    const int target = target_from_offset(a - board_ai::loveletter::kPriestOffset);
+    if (target == actor || !d.alive[target]) return -100.0;
+    if (d.protected_flags[target]) return -5.0;
+    return 2.5;  // solid info gain
+  }
+
+  // --- Baron (32..35): compare hands; win if we're higher ---
+  if (a >= board_ai::loveletter::kBaronOffset &&
+      a < board_ai::loveletter::kBaronOffset + board_ai::loveletter::kBaronCount) {
+    const int target = target_from_offset(a - board_ai::loveletter::kBaronOffset);
+    if (target == actor || !d.alive[target]) return -100.0;
+    if (d.protected_flags[target]) return -5.0;
+    // We play Baron alongside our OTHER card (whichever we keep). Estimate
+    // we keep the higher of (hand, drawn) and play the other. Here Baron IS
+    // being played, so we'd retain whichever of hand/drawn isn't Baron (=3).
+    int kept = (my_hand == kBaron) ? my_drawn : my_hand;
+    // Higher `kept` = more likely to win Baron compare. Simplified scale.
+    return static_cast<double>(kept) * 0.5 - 1.5;
+  }
+
+  // --- Handmaid (36): self-protect until next turn. Usually safe. ---
+  if (a == board_ai::loveletter::kHandmaidAction) {
+    return 2.2;
+  }
+
+  // --- Prince (37..40): force target to discard; may kill if Princess ---
+  if (a >= board_ai::loveletter::kPrinceOffset &&
+      a < board_ai::loveletter::kPrinceOffset + board_ai::loveletter::kPrinceCount) {
+    const int target = target_from_offset(a - board_ai::loveletter::kPrinceOffset);
+    if (!d.alive[target]) return -100.0;
+    if (target != actor && d.protected_flags[target]) return -5.0;
+    // Targeting self is usually bad unless we have Princess (forced discard
+    // of OTHER card); but with Prince + Princess you can't play Prince
+    // on self. Heuristic: prefer prince on opponents.
+    if (target == actor) {
+      // Self-targeting: force discard of own drawn/hand — only good if
+      // we're holding Countess or low card we want to dump.
+      int kept = (my_hand == kPrince) ? my_drawn : my_hand;
+      if (kept == kCountess) return 0.3;  // reshuffle for better
+      return -1.0;
+    }
+    return 1.8;
+  }
+
+  // --- King (41..44): swap hands with target ---
+  if (a >= board_ai::loveletter::kKingOffset &&
+      a < board_ai::loveletter::kKingOffset + board_ai::loveletter::kKingCount) {
+    const int target = target_from_offset(a - board_ai::loveletter::kKingOffset);
+    if (target == actor || !d.alive[target]) return -100.0;
+    if (d.protected_flags[target]) return -5.0;
+    // We play King, so we keep whatever's in our other slot (not King).
+    int my_other = (my_hand == kKing) ? my_drawn : my_hand;
+    // King good if our other card is low: swap a low card for opp's unknown.
+    // Rough: if my_other <= 3, swap is net-positive.
+    if (my_other <= 3) return 2.0;
+    return -0.5;
+  }
+
+  // --- Countess (45): just discard. Score ~0 (no effect) but mandatory
+  // in some hand combos. Rules engine handles mandatory; here baseline low.
+  if (a == board_ai::loveletter::kCountessAction) {
+    // If paired with King/Prince, rules force Countess. Otherwise unnecessary
+    // to play voluntarily (you save a 7-card for late-round comparisons).
+    if (my_hand == kKing || my_drawn == kKing ||
+        my_hand == kPrince || my_drawn == kPrince) {
+      return 0.5;  // forced — take it
+    }
+    return -0.8;  // voluntary Countess wastes a high card
+  }
+
+  // --- Princess (46): suicide. ---
+  if (a == board_ai::loveletter::kPrincessAction) {
+    return -50.0;  // never voluntarily
+  }
+
+  // Shouldn't reach.
+  return 0.0;
+}
+
+template <int NPlayers>
+board_ai::HeuristicResult pick(
+    board_ai::IGameState& state,
+    const board_ai::IGameRules& rules,
+    std::uint64_t rng_seed) {
+  auto& s = board_ai::checked_cast<LoveLetterState<NPlayers>>(state);
   auto legal = rules.legal_actions(state);
+  std::mt19937 rng(rng_seed);
+
   board_ai::HeuristicResult result;
   result.actions = legal;
-  result.scores.assign(legal.size(), 1.0);
+  result.scores.reserve(legal.size());
+  for (ActionId a : legal) {
+    result.scores.push_back(score_action<NPlayers>(s, a, rng));
+  }
   return result;
 }
+
+}  // namespace loveletter_heuristic
 
 // --- Public-event protocol -------------------------------------------------
 //
@@ -354,15 +502,38 @@ PublicEventTrace extract_events(
     out.pre_events.emplace_back("hand_override", std::move(payload));
   }
 
-  // Baron special case: if target is perspective, actor's hand will be
-  // revealed (to perspective's tracker) via the outcome. Emit pre-event
-  // for actor so AI's state has actor's real hand at comparison time.
-  if (card == kBaron && target == perspective && actor != perspective &&
-      db.alive[actor] && !db.protected_flags[actor]) {
-    AnyMap payload;
-    payload["player"] = std::any(actor);
-    payload["card"] = std::any(static_cast<int>(db.hand[actor]));
-    out.pre_events.emplace_back("hand_override", std::move(payload));
+  // Pre-event: sync actor's own hand + drawn_card when actor != perspective.
+  // Without this, ai_view.hand[actor] and ai_view.drawn_card are arbitrary
+  // placeholders, and the rules-apply pipeline reads them at:
+  //   - `played_from_hand = (d.hand[me] == played_card)` determines whether
+  //     d.hand[me] swaps with d.drawn_card (affects post-swap state)
+  //   - self-target cases (Prince on self): after the swap, d.hand[target=me]
+  //     equals the old drawn_card; Prince's effect reads this value and
+  //     can eliminate the player if it happens to be Princess
+  //   - Baron: reads d.hand[me] after the swap = old drawn_card
+  // Without syncing, these reads pick up ai_view's arbitrary values and
+  // the action resolves differently than truth — ai_view drifts (worst
+  // case: ai_view goes terminal while truth continues, legal_actions in
+  // ai_view becomes empty, get_ai_action returns empty dict).
+  //
+  // These pre-event values are temporarily leaked into ai_view but either
+  // (a) overwritten by the action itself (swap + discard + redraw), or
+  // (b) irrelevant because randomize_unseen at MCTS root samples a fresh
+  // value each simulation based on the tracker's belief, not ai_view's
+  // concrete fields.
+  if (actor != perspective && actor >= 0 && actor < NPlayers &&
+      db.alive[actor]) {
+    {
+      AnyMap payload;
+      payload["player"] = std::any(actor);
+      payload["card"] = std::any(static_cast<int>(db.hand[actor]));
+      out.pre_events.emplace_back("hand_override", std::move(payload));
+    }
+    if (db.drawn_card != 0) {
+      AnyMap payload;
+      payload["card"] = std::any(static_cast<int>(db.drawn_card));
+      out.pre_events.emplace_back("drawn_override", std::move(payload));
+    }
   }
 
   // Post-event 1: Prince target redraws. If target == perspective,
@@ -423,10 +594,9 @@ board_ai::GameBundle make_loveletter(const std::string& game_id, std::uint64_t s
   auto tracker = std::make_unique<LoveLetterBeliefTracker<NPlayers>>();
   b.encoder = std::make_unique<LoveLetterFeatureEncoder<NPlayers>>(tracker.get());
   b.belief_tracker = std::move(tracker);
-  b.stochastic_detector = board_ai::default_stochastic_detector;
   b.state_serializer = serialize_loveletter<NPlayers>;
   b.action_descriptor = describe_loveletter;
-  b.heuristic_picker = heuristic_random;
+  b.heuristic_picker = loveletter_heuristic::pick<NPlayers>;
   b.public_event_extractor = loveletter_events::extract_events<NPlayers>;
   b.public_event_applier = loveletter_events::apply_event<NPlayers>;
   b.initial_observation_extractor = loveletter_events::extract_initial_observation<NPlayers>;

@@ -466,6 +466,7 @@ UndoToken QuoridorRules::do_action_fast(IGameState& state, ActionId action) cons
   if (!validate_action(*s, action)) {
     return token;
   }
+  s->begin_step();  // framework step counter; paired with end_step in undo_action
 
   UndoRecord rec{};
   rec.prev_player = s->current_player_;
@@ -530,6 +531,7 @@ void QuoridorRules::undo_action(IGameState& state, const UndoToken& token) const
   s->pawn_row = rec.prev_pawn_row;
   s->pawn_col = rec.prev_pawn_col;
   s->walls_remaining = rec.prev_walls_remaining;
+  s->end_step();
   (void)token;
 }
 

@@ -10,29 +10,38 @@
 
 namespace board_ai::azul {
 
+// Azul has symmetric random state (bag contents) but no per-player hidden
+// fields — every player sees the same public info. private_feature_dim()
+// is 0.
 template <int NPlayers>
 class AzulFeatureEncoder final : public IFeatureEncoder {
  public:
   using Cfg = AzulConfig<NPlayers>;
   int action_space() const override { return Cfg::kActionSpace; }
   int feature_dim() const override { return Cfg::kFeatureDim; }
+  int public_feature_dim() const override { return Cfg::kFeatureDim; }
+  int private_feature_dim() const override { return 0; }
 
-  bool encode(
+  void encode_public(
       const IGameState& state,
       int perspective_player,
-      const std::vector<ActionId>& legal_actions,
-      std::vector<float>* features,
-      std::vector<float>* legal_mask) const override;
+      std::vector<float>* out) const override;
+
+  void encode_private(
+      const IGameState& /*state*/,
+      int /*player*/,
+      std::vector<float>* /*out*/) const override {}
 };
 
 template <int NPlayers>
 class AzulBeliefTracker final : public IBeliefTracker {
  public:
-  void init(const IGameState& state, int perspective_player) override;
-  void observe_action(
-      const IGameState& state_before,
+  void init(int perspective_player, const AnyMap& initial_observation) override;
+  void observe_public_event(
+      int actor,
       ActionId action,
-      const IGameState& state_after) override;
+      const std::vector<PublicEvent>& pre_events,
+      const std::vector<PublicEvent>& post_events) override;
   void randomize_unseen(IGameState& state, std::mt19937& rng) const override;
 
  private:

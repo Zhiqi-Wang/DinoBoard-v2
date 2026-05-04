@@ -112,29 +112,51 @@ def test_splendor_nested_temperature_schedule_read_by_pipeline():
     assert _get_temperature_key(cfg, "decay_plies", 0) == 30
 
 
-def test_all_game_json_training_keys_are_flat(game_id, game_config):
-    """Check that pipeline-consumed keys exist as flat values, not nested dicts.
+def test_all_game_json_training_keys_are_well_formed(game_id, game_config):
+    """Pipeline-consumed keys must be either flat values or recognized
+    nested shapes. BUG-008 fix allowed `temperature_schedule` nested dict
+    alongside the flat `temperature_{initial,final,decay_plies}` keys —
+    `_get_temperature_key` in pipeline handles both.
 
-    Keys the pipeline reads: temperature_initial, temperature_final,
-    temperature_decay_plies, and all tail_solve_* / heuristic_* / dirichlet_* keys.
+    We check:
+      1. temperature keys: must be EITHER flat OR under `temperature_schedule`
+         — not some other nested shape.
+      2. All OTHER pipeline keys must be flat (unexpected nesting = typo).
     """
     cfg = game_config.get("training", {})
-    pipeline_keys = [
+
+    # Temperature keys: flat OR nested under `temperature_schedule`.
+    temperature_keys = {"temperature_initial", "temperature_final", "temperature_decay_plies"}
+    sched = cfg.get("temperature_schedule")
+    has_nested_sched = isinstance(sched, dict)
+    for k in temperature_keys:
+        val = cfg.get(k)
+        if val is not None and isinstance(val, dict):
+            pytest.fail(
+                f"{game_id}: temperature key '{k}' is nested (type={type(val).__name__}); "
+                f"must be a scalar or placed under 'temperature_schedule'")
+    if has_nested_sched:
+        # Verify the nested shape has the right structure.
+        for nk in ("initial", "final", "decay_plies"):
+            if nk in sched:
+                assert not isinstance(sched[nk], dict), (
+                    f"{game_id}: temperature_schedule.{nk} is doubly-nested")
+
+    # All OTHER pipeline keys must be flat.
+    other_keys = [
         "simulations", "c_puct", "temperature",
         "dirichlet_alpha", "dirichlet_epsilon", "dirichlet_on_first_n_plies",
         "max_game_plies", "tail_solve_enabled", "tail_solve_start_ply",
         "tail_solve_depth_limit", "tail_solve_node_budget", "tail_solve_margin_weight",
-        "temperature_initial", "temperature_final", "temperature_decay_plies",
         "heuristic_guidance_ratio", "heuristic_temperature", "training_filter_ratio",
     ]
     nested_keys = []
-    for key in pipeline_keys:
+    for key in other_keys:
         val = cfg.get(key)
         if isinstance(val, dict):
             nested_keys.append(key)
-    if game_id == "splendor":
-        pytest.skip("Splendor uses nested temperature_schedule — pipeline handles both formats")
-    assert not nested_keys, f"nested dicts found for pipeline keys: {nested_keys}"
+    assert not nested_keys, (
+        f"{game_id}: unexpected nested dicts for pipeline keys: {nested_keys}")
 
 
 def test_simulations_affects_visit_count():

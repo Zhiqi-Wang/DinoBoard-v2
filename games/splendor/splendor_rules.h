@@ -20,11 +20,6 @@ class SplendorRules final : public IGameRules {
   UndoToken do_action_deterministic(IGameState& state, ActionId action) const override;
   void undo_action(IGameState& state, const UndoToken& token) const override;
 
-  std::vector<ChanceOutcome> chance_outcomes(
-      const IGameState& state, ActionId action) const override;
-  UndoToken do_action_with_outcome(
-      IGameState& state, ActionId action, int outcome_id) const override;
-
   static bool is_terminal_data(const SplendorData<NPlayers>& data);
   static std::vector<ActionId> legal_actions_data(const SplendorData<NPlayers>& d);
   static SplendorData<NPlayers> apply_action_copy(const SplendorData<NPlayers>& src, ActionId action);

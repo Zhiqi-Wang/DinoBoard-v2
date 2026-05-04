@@ -345,6 +345,7 @@ UndoToken AzulRules<NPlayers>::do_action_fast(IGameState& state, ActionId action
   if (!validate_action(*s, action)) {
     return UndoToken{};
   }
+  s->begin_step();  // framework step counter; paired with end_step in undo_action
 
   UndoRecord<NPlayers> rec;
   rec.prev_current_player = s->current_player_;
@@ -422,6 +423,7 @@ void AzulRules<NPlayers>::undo_action(IGameState& state, const UndoToken& token)
     s->box_lid.assign(rec.full_before.box_lid.begin(), rec.full_before.box_lid.end());
     s->players = rec.full_before.players;
     s->rng_salt = rec.full_before.rng_salt;
+    s->end_step();
     return;
   }
   s->current_player_ = rec.prev_current_player;
@@ -438,6 +440,7 @@ void AzulRules<NPlayers>::undo_action(IGameState& state, const UndoToken& token)
   if (rec.has_factory_source && rec.source_factory_idx >= 0 && rec.source_factory_idx < Cfg::kFactories) {
     s->factories[rec.source_factory_idx] = rec.prev_factory_source;
   }
+  s->end_step();
   (void)token;
 }
 

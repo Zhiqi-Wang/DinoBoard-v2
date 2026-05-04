@@ -1,37 +1,46 @@
 .azul-board-wrap {
-  width: min(900px, 100%);
+  width: min(1040px, 100%);
 }
 
 .azul-players-area {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 14px;
+  gap: 16px;
 }
 
+/* Public area is a flex row: factory grid on the left, center pool on
+ * the right. Both are vertically centered so a short center pool sits
+ * midway against a taller factory grid, and short factory grids (2p,
+ * 2×3) sit centered against the pool's fixed height. */
 .azul-table-area {
   position: relative;
   background: rgba(255, 255, 255, 0.2);
   border: 1px solid #c6d7e3;
   border-radius: 12px;
-  padding: 14px;
-  margin-bottom: 14px;
+  padding: 22px 18px 18px;
+  margin-bottom: 16px;
   display: flex;
-  gap: 14px;
-  flex-wrap: wrap;
-  align-items: flex-start;
+  justify-content: center;
+  align-items: center;
+  gap: 20px;
 }
 
+/* Factory grid uses 3 columns regardless of player count:
+ *   2p: 5 factories → 3×2 (1 empty)
+ *   3p: 7 factories → 3×3 (2 empty)
+ *   4p: 9 factories → 3×3
+ * Row-wise fill matches the physical table layout. */
 .factories-wrap {
   display: grid;
-  grid-template-columns: repeat(3, 120px);
-  gap: 14px;
+  grid-template-columns: repeat(3, 140px);
+  gap: 20px;
   justify-content: center;
-  flex: 1;
+  align-items: center;
 }
 
 .factory {
-  width: 120px;
-  min-height: 120px;
+  width: 140px;
+  height: 140px;
   border-radius: 999px;
   border: 3px solid #334155;
   background: radial-gradient(circle at 50% 50%, #d9ecf7 0 35%, #78b7d6 36% 68%, #f8fbfd 69% 100%);
@@ -59,24 +68,31 @@
 
 .factory-tiles {
   display: grid;
-  grid-template-columns: repeat(2, 34px);
-  gap: 8px;
+  grid-template-columns: repeat(2, 40px);
+  gap: 10px;
   justify-content: center;
 }
 
+/* Center pool sits to the right of the factory grid as its own column,
+ * vertically centered in the public area (see .azul-table-area flex).
+ * Slightly wider than a factory disc to comfortably hold 3×2 = 6 slots
+ * of 40px tiles. */
 .center-pool {
-  width: 120px;
-  min-height: 120px;
+  width: 150px;
+  min-height: 150px;
   border: 2px dashed #8aa9bf;
   border-radius: 12px;
-  padding: 28px 10px 10px;
-  background: rgba(255, 255, 255, 0.45);
+  padding: 22px 8px 10px;
+  background: rgba(255, 255, 255, 0.55);
   position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .center-title {
   position: absolute;
-  top: 6px;
+  top: 4px;
   left: 50%;
   transform: translateX(-50%);
   font-size: 12px;
@@ -87,15 +103,16 @@
 
 .center-tiles {
   display: grid;
-  grid-template-columns: repeat(2, 42px);
-  gap: 8px;
+  grid-template-columns: repeat(3, 40px);
+  gap: 4px;
   justify-content: center;
+  align-content: center;
 }
 
 .center-slot {
   position: relative;
-  width: 42px;
-  height: 42px;
+  width: 40px;
+  height: 40px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -103,8 +120,8 @@
 
 .center-slot .tile,
 .center-slot .tile-btn {
-  width: 38px;
-  height: 38px;
+  width: 40px;
+  height: 40px;
 }
 
 .center-slot.empty .tile,
@@ -161,10 +178,14 @@
 
 .selection-msg:empty { display: none; }
 
+/* Uniform 40px tile across factories, center pool, pattern lines, wall,
+ * and floor — the fly animation sprite is also 40px, so tiles don't
+ * resize mid-flight. If two 2p player boards don't fit side-by-side on
+ * narrow viewports the board-stage scrolls horizontally. */
 .tile, .tile-btn {
-  width: 34px;
-  height: 34px;
-  border-radius: 4px;
+  width: 40px;
+  height: 40px;
+  border-radius: 5px;
   border: 1px solid rgba(17, 24, 39, 0.13);
   display: inline-flex;
   align-items: center;
@@ -177,7 +198,7 @@
   cursor: pointer;
   padding: 0;
   background: none;
-  height: 34px;
+  height: 40px;
 }
 
 .tile-btn:hover { opacity: 0.85; }
@@ -201,8 +222,8 @@
 .player-board {
   background: linear-gradient(180deg, #f8f2e8 0, #f1e8da 100%);
   border: 2px solid #8aa9bf;
-  border-radius: 10px;
-  padding: 10px;
+  border-radius: 12px;
+  padding: 8px 10px 10px;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
 }
 
@@ -219,7 +240,7 @@
 .board-grid {
   display: grid;
   grid-template-columns: auto auto;
-  gap: 14px;
+  gap: 10px;
   justify-content: center;
 }
 
@@ -227,13 +248,13 @@
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 4px;
+  gap: 5px;
 }
 
 .wall-panel {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
 }
 
 .pattern-row {
@@ -241,32 +262,37 @@
   gap: 4px;
   align-items: center;
   justify-content: flex-end;
-  height: 38px;
+  height: 44px;
 }
 
 .wall-row {
   display: flex;
   gap: 4px;
-  height: 38px;
+  height: 44px;
   align-items: center;
 }
 
 .wall-cell {
-  width: 34px;
-  height: 34px;
+  width: 40px;
+  height: 40px;
   border: 1px solid #94a3b8;
-  border-radius: 4px;
+  border-radius: 5px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
 
 .wall-cell.filled {
-  border: 2px solid rgba(15, 23, 42, 0.35);
+  border: 2px solid rgba(15, 23, 42, 0.6);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
+/* Unfilled ghost: color is only a faint hint, clearly distinct from a
+ * placed tile. Low opacity + dashed border + near-transparent fill. */
 .wall-cell.ghost {
-  opacity: 0.35;
+  opacity: 0.18;
+  border-style: dashed;
+  border-color: rgba(15, 23, 42, 0.3);
 }
 
 .target-slot {
@@ -288,7 +314,7 @@
 }
 
 .floor-area {
-  margin-top: 8px;
+  margin-top: 10px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -308,15 +334,15 @@
 
 .floor-slot {
   position: relative;
-  width: 34px;
-  height: 34px;
+  width: 40px;
+  height: 40px;
 }
 
 .floor-base {
   position: absolute;
   inset: 0;
   border: 1px dashed #94a3b8;
-  border-radius: 4px;
+  border-radius: 5px;
   background: #e5e7eb;
   display: flex;
   align-items: center;
@@ -364,9 +390,19 @@
 .anim-flying-token.azul-black { background: #111827; color: #fff; }
 .anim-flying-token.azul-white { background: #67E8F9; color: #111; }
 
+/* With 40px tiles, two 2p player boards side-by-side need ~944px. The
+ * board-stage usually has ~728px free (1440 viewport - sidebar - info
+ * column - margins), so below ~1500px viewport stack them vertically
+ * to avoid horizontal scroll. */
+@media (max-width: 1500px) {
+  .azul-players-area { grid-template-columns: 1fr; }
+  .azul-players-area.players-multi { grid-template-columns: 1fr 1fr; }
+}
+
 @media (max-width: 980px) {
   .azul-players-area { grid-template-columns: 1fr; }
   .azul-players-area.players-multi { grid-template-columns: 1fr; }
-  .factories-wrap { grid-template-columns: repeat(2, 120px); }
-  .center-pool { width: auto; min-width: 100px; }
+  .factories-wrap { grid-template-columns: repeat(3, 120px); gap: 14px; }
+  .factory { width: 120px; height: 120px; }
+  .center-pool { width: 130px; min-height: 130px; }
 }

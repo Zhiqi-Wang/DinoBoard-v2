@@ -39,7 +39,6 @@ endif()
 add_library(dinoboard_runtime STATIC
     runtime/selfplay_runner.cpp
     runtime/arena_runner.cpp
-    runtime/nopeek_support.cpp
     runtime/heuristic_runner.cpp
 )
 target_link_libraries(dinoboard_runtime PUBLIC dinoboard_core dinoboard_search)

@@ -14,7 +14,6 @@ SelfplayEpisodeResult run_selfplay_episode(
     const search::IPolicyValueEvaluator& evaluator,
     const SelfplayConfig& config,
     std::uint64_t episode_seed,
-    TraversalLimiterFactory limiter_factory,
     IBeliefTracker* belief_tracker,
     const IFeatureEncoder* encoder,
     const search::ITailSolver* tail_solver,
@@ -42,11 +41,6 @@ SelfplayEpisodeResult run_selfplay_episode(
     filtered_rules_ptr = std::make_unique<FilteredRulesWrapper>(rules, training_action_filter);
   }
 
-  std::unique_ptr<search::INetMctsTraversalLimiter> limiter;
-  if (limiter_factory) {
-    limiter = limiter_factory();
-  }
-
   auto state = initial_state.clone_state();
   int ply = 0;
 
@@ -54,11 +48,13 @@ SelfplayEpisodeResult run_selfplay_episode(
   // trace_belief_tracker is a SEPARATE instance dedicated to this
   // perspective (primary belief_tracker gets re-init'd every ply for MCTS).
   if (tracing) {
-    trace_belief_tracker->init(*state, trace_perspective);
-    result.initial_belief_snapshot = trace_belief_tracker->serialize();
+    AnyMap trace_init_obs;
     if (initial_observation_extractor) {
-      result.initial_observation = initial_observation_extractor(*state, trace_perspective);
+      trace_init_obs = initial_observation_extractor(*state, trace_perspective);
     }
+    trace_belief_tracker->init(trace_perspective, trace_init_obs);
+    result.initial_belief_snapshot = trace_belief_tracker->serialize();
+    result.initial_observation = trace_init_obs;
   }
 
   std::mt19937 heuristic_rng(static_cast<unsigned>(episode_seed ^ 0xDEADBEEF));
@@ -145,27 +141,39 @@ SelfplayEpisodeResult run_selfplay_episode(
       std::unique_ptr<IGameState> state_before;
       if (belief_tracker || tracing) state_before = state->clone_state();
       effective_rules.do_action_fast(*state, chosen);
-      if (belief_tracker) belief_tracker->observe_action(*state_before, chosen, *state);
+      if (belief_tracker) {
+        PublicEventTrace evt;
+        if (public_event_extractor) {
+          evt = public_event_extractor(*state_before, chosen, *state, player);
+        }
+        belief_tracker->observe_public_event(
+            player, chosen, evt.pre_events, evt.post_events);
+      }
       if (tracing) {
         SelfplayObservationTrace t{};
         t.ply = ply;
         t.actor = player;
         t.action = chosen;
-        auto evt = public_event_extractor(*state_before, chosen, *state, trace_perspective);
-        t.pre_events = std::move(evt.pre_events);
-        t.post_events = std::move(evt.post_events);
-        trace_belief_tracker->observe_action(*state_before, chosen, *state);
+        auto evt = public_event_extractor(
+            *state_before, chosen, *state, trace_perspective);
+        t.pre_events = evt.pre_events;
+        t.post_events = evt.post_events;
+        trace_belief_tracker->observe_public_event(
+            player, chosen, evt.pre_events, evt.post_events);
         t.belief_snapshot_after = trace_belief_tracker->serialize();
         result.observation_trace.push_back(std::move(t));
       }
-      if (limiter) limiter->on_ply_complete();
       ply += 1;
       heuristic_moves += 1;
       continue;
     }
 
     if (belief_tracker) {
-      belief_tracker->init(*state, player);
+      AnyMap main_init_obs;
+      if (initial_observation_extractor) {
+        main_init_obs = initial_observation_extractor(*state, player);
+      }
+      belief_tracker->init(player, main_init_obs);
     }
 
     const auto noise = search::resolve_root_dirichlet_noise(
@@ -182,7 +190,11 @@ SelfplayEpisodeResult run_selfplay_episode(
     mcts_cfg.value_clip = config.value_clip;
     mcts_cfg.root_dirichlet_alpha = noise.alpha;
     mcts_cfg.root_dirichlet_epsilon = noise.epsilon;
-    mcts_cfg.traversal_limiter = limiter.get();
+    // ISMCTS-v2: root-sampling hidden info + DAG per-acting-player keying.
+    // MCTS uses the per-sim sampled world's rules.legal_actions at each node.
+    if (belief_tracker) {
+      mcts_cfg.root_belief_tracker = belief_tracker;
+    }
 
     if (try_tail_solve) {
       mcts_cfg.tail_solve_enabled = true;
@@ -200,7 +212,6 @@ SelfplayEpisodeResult run_selfplay_episode(
         (static_cast<std::uint64_t>(ply) * kGoldenRatio64) ^ 0x243F6A8885A308D3ULL;
     mcts.search_root(*state, effective_rules, value_model, evaluator, &stats, mcts_seed);
 
-    result.total_traversal_stops += stats.traversal_stops;
     if (stats.tail_solve_attempted) {
       result.tail_solve_attempts += 1;
       result.tail_solve_total_ms += stats.tail_solve_elapsed_ms;
@@ -238,20 +249,28 @@ SelfplayEpisodeResult run_selfplay_episode(
     std::unique_ptr<IGameState> state_before;
     if (belief_tracker || tracing) state_before = state->clone_state();
     effective_rules.do_action_fast(*state, chosen);
-    if (belief_tracker) belief_tracker->observe_action(*state_before, chosen, *state);
+    if (belief_tracker) {
+      PublicEventTrace evt;
+      if (public_event_extractor) {
+        evt = public_event_extractor(*state_before, chosen, *state, player);
+      }
+      belief_tracker->observe_public_event(
+          player, chosen, evt.pre_events, evt.post_events);
+    }
     if (tracing) {
       SelfplayObservationTrace t{};
       t.ply = ply;
       t.actor = player;
       t.action = chosen;
-      auto evt = public_event_extractor(*state_before, chosen, *state, trace_perspective);
-      t.pre_events = std::move(evt.pre_events);
-      t.post_events = std::move(evt.post_events);
-      trace_belief_tracker->observe_action(*state_before, chosen, *state);
+      auto evt = public_event_extractor(
+          *state_before, chosen, *state, trace_perspective);
+      t.pre_events = evt.pre_events;
+      t.post_events = evt.post_events;
+      trace_belief_tracker->observe_public_event(
+          player, chosen, evt.pre_events, evt.post_events);
       t.belief_snapshot_after = trace_belief_tracker->serialize();
       result.observation_trace.push_back(std::move(t));
     }
-    if (limiter) limiter->on_ply_complete();
     ply += 1;
   }
 

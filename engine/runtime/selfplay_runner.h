@@ -59,7 +59,6 @@ struct SelfplayEpisodeResult {
   int tail_solve_completed = 0;
   int tail_solve_successes = 0;
   double tail_solve_total_ms = 0.0;
-  int total_traversal_stops = 0;
 
   bool trace_enabled = false;
   int trace_perspective = -1;
@@ -88,9 +87,6 @@ struct SelfplayConfig {
   double heuristic_temperature = 0.0;
   double training_filter_ratio = 1.0;
 };
-
-using TraversalLimiterFactory = std::function<
-    std::unique_ptr<search::INetMctsTraversalLimiter>()>;
 
 using GameAdjudicator = board_ai::GameAdjudicator;
 using AuxiliaryScorer = board_ai::AuxiliaryScorer;
@@ -128,16 +124,6 @@ class FilteredRulesWrapper final : public IGameRules {
     return inner_.do_action_deterministic(state, action);
   }
 
-  std::vector<ChanceOutcome> chance_outcomes(
-      const IGameState& state, ActionId action) const override {
-    return inner_.chance_outcomes(state, action);
-  }
-
-  UndoToken do_action_with_outcome(
-      IGameState& state, ActionId action, int outcome_id) const override {
-    return inner_.do_action_with_outcome(state, action, outcome_id);
-  }
-
  private:
   const IGameRules& inner_;
   TrainingActionFilter filter_;
@@ -153,7 +139,6 @@ SelfplayEpisodeResult run_selfplay_episode(
     const search::IPolicyValueEvaluator& evaluator,
     const SelfplayConfig& config,
     std::uint64_t episode_seed,
-    TraversalLimiterFactory limiter_factory = nullptr,
     IBeliefTracker* belief_tracker = nullptr,
     const IFeatureEncoder* encoder = nullptr,
     const search::ITailSolver* tail_solver = nullptr,

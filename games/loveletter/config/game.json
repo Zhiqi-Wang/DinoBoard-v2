@@ -22,19 +22,27 @@
       "decay_plies": 10
     },
     "dirichlet_alpha": 0.5,
-    "dirichlet_epsilon": 0.25,
-    "dirichlet_on_first_n_plies": 10,
+    "dirichlet_epsilon": 0.10,
+    "dirichlet_on_first_n_plies": 5,
     "max_game_plies": 30,
     "episodes_per_step": 200,
     "batch_size": 256,
-    "learning_rate": 0.001,
-    "steps": 3000,
-    "peek_steps": 0
+    "learning_rate": 0.0005,
+    "steps": 4000,
+    "peek_steps": 0,
+    "warm_start_heuristic": true,
+    "warm_start_episodes": 2000,
+    "warm_start_epochs": 5,
+    "warm_start_temperature": 1.5,
+    "gating_accept_win_rate": 0.55,
+    "heuristic_guidance_plies": 5,
+    "heuristic_guidance_ratio": 0.2
   },
   "network": {
     "type": "mlp",
     "hidden_layers": [
-      128,
+      256,
+      256,
       128
     ],
     "activation": "relu"

@@ -1,0 +1,9 @@
+{
+  "difficulty_overrides": {
+    "expert": {
+      "simulations": 500,
+      "temperature": 0.0
+    }
+  },
+  "analysis_simulations": 500
+}

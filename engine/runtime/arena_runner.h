@@ -33,7 +33,6 @@ struct ArenaMatchResult {
   int total_plies = 0;
   std::vector<ActionId> action_history;
   std::vector<ArenaPlyStats> ply_stats;
-  int total_traversal_stops = 0;
 };
 
 using PolicyEvaluatorFactory = std::function<
@@ -47,8 +46,13 @@ ArenaMatchResult run_arena_match(
     const std::vector<ArenaPlayerConfig>& player_configs,
     int max_game_plies = 500,
     std::uint64_t match_seed = 0,
-    TraversalLimiterFactory limiter_factory = nullptr,
     IBeliefTracker* belief_tracker = nullptr,
-    GameAdjudicator adjudicator = nullptr);
+    GameAdjudicator adjudicator = nullptr,
+    // Tracker input adapters: needed when belief_tracker is set. The
+    // tracker receives events from public_event_extractor and its init
+    // input from initial_observation_extractor — state reads never pass
+    // through the tracker interface.
+    PublicEventExtractor public_event_extractor = nullptr,
+    InitialObservationExtractor initial_observation_extractor = nullptr);
 
 }  // namespace board_ai::runtime

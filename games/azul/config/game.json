@@ -13,7 +13,6 @@
     "truncate",
     "nopeek"
   ],
-  "model_path": "games/azul/model/best_model.onnx",
   "training": {
     "simulations": 400,
     "c_puct": 1.4,

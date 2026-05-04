@@ -36,7 +36,6 @@ sources = [
     "engine/infer/onnx_policy_value_evaluator.cpp",
     "engine/runtime/selfplay_runner.cpp",
     "engine/runtime/arena_runner.cpp",
-    "engine/runtime/nopeek_support.cpp",
     "engine/runtime/heuristic_runner.cpp",
     "games/tictactoe/tictactoe_state.cpp",
     "games/tictactoe/tictactoe_rules.cpp",

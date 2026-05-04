@@ -22,8 +22,8 @@ function injectZoomControls(target) {
   el.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-zoom]');
     if (!btn) return;
-    if (btn.dataset.zoom === 'in') zoom = Math.min(180, zoom + 10);
-    else zoom = Math.max(60, zoom - 10);
+    if (btn.dataset.zoom === 'in') zoom = Math.min(180, zoom + 5);
+    else zoom = Math.max(60, zoom - 5);
     apply();
   });
 }

@@ -41,9 +41,20 @@ template <int NPlayers>
 struct LoveLetterConfig {
   static_assert(NPlayers >= 2 && NPlayers <= 4);
   static constexpr int kPlayers = NPlayers;
-  static constexpr int kPerPlayerFeatures = 29;
+  // Public per-player (visible to all): alive, protected, current_player,
+  // hand_exposed (4), discard counts (8), discard size (1) = 13.
+  static constexpr int kPerPlayerPublicFeatures = 13;
+  // Private per-player (from p's perspective, about p or p's knowledge of
+  // others): hand one-hot (8) + drawn_card one-hot (8) = 16.
+  static constexpr int kPerPlayerPrivateFeatures = 16;
+  static constexpr int kPerPlayerFeatures =
+      kPerPlayerPublicFeatures + kPerPlayerPrivateFeatures;  // 29
   static constexpr int kGlobalFeatures = 12;
   static constexpr int kFeatureDim = kPerPlayerFeatures * NPlayers + kGlobalFeatures;
+  static constexpr int kPublicFeatureDim =
+      kPerPlayerPublicFeatures * NPlayers + kGlobalFeatures;
+  static constexpr int kPrivateFeatureDim =
+      kPerPlayerPrivateFeatures * NPlayers;
   static constexpr int kFaceUpRemoved = NPlayers == 2 ? 3 : 0;
 };
 
@@ -83,12 +94,13 @@ struct LoveLetterState final : public CloneableState<LoveLetterState<NPlayers>> 
   void reset_with_seed(std::uint64_t seed) override;
 
   StateHash64 state_hash(bool include_hidden_rng) const override;
+  void hash_public_fields(Hasher& h) const override;
+  void hash_private_fields(int player, Hasher& h) const override;
   int current_player() const override;
   int first_player() const override;
   bool is_terminal() const override;
   int num_players() const override { return Cfg::kPlayers; }
   int winner() const override;
-  std::uint64_t rng_nonce() const override;
 };
 
 extern template struct LoveLetterData<2>;

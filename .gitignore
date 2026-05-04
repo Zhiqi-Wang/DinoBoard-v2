@@ -45,6 +45,18 @@ games/.random_models/
 # ONNX Runtime (local dependency)
 third_party/onnxruntime-*/
 
+# Plans (private strategy docs)
+docs/plans/
+
+# Devlog (private daily notes)
+docs/devlog/
+
+# Ad-hoc scripts (local utility scripts)
+script/
+
+# Replay dumps (local debug artifacts — regenerate from selfplay / web)
+games/*/replay/
+
 # Secrets
 *.pem
 *.ppk
@@ -57,3 +69,12 @@ third_party/onnxruntime-*/
 # Ad-hoc dev artifacts (debugging screenshots, scratch notes).
 截图/
 screenshots/
+
+# Reference-only projects mounted for inspection (previous DinoBoard version,
+# Mosaic, etc.). Not part of the build or version control.
+参考项目/
+
+# Benchmark snapshots — trained model checkpoints used as opponents for
+# future training runs. Archived outside of runs/ so subsequent trainings
+# don't overwrite them. Kept local (large, reproducible from train.log).
+benchmarks/

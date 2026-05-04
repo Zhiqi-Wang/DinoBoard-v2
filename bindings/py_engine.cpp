@@ -6,6 +6,7 @@
 #include <memory>
 #include <random>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "../engine/core/game_interfaces.h"
@@ -15,7 +16,6 @@
 #include "../engine/runtime/selfplay_runner.h"
 #include "../engine/runtime/arena_runner.h"
 #include "../engine/runtime/heuristic_runner.h"
-#include "../engine/runtime/nopeek_support.h"
 #include "../engine/search/net_mcts.h"
 #include "../engine/search/root_noise.h"
 #include "../engine/search/temperature_schedule.h"
@@ -25,6 +25,31 @@ namespace py = pybind11;
 using namespace board_ai;
 
 namespace {
+
+// Tracker adapter helpers: convert the old (state_before, action, state_after)
+// trio into the tracker's new event-only input. Games with a registered
+// public_event_extractor produce the event stream; games without one pass
+// empty vectors (tracker becomes effectively a no-op for those games, which
+// matches their pre-migration behavior since they had no hidden info).
+inline void tracker_init(IBeliefTracker& bt, const GameBundle& bundle,
+                         const IGameState& state, int perspective) {
+  AnyMap obs;
+  if (bundle.initial_observation_extractor) {
+    obs = bundle.initial_observation_extractor(state, perspective);
+  }
+  bt.init(perspective, obs);
+}
+
+inline void tracker_observe(IBeliefTracker& bt, const GameBundle& bundle,
+                            const IGameState& before, ActionId action,
+                            const IGameState& after, int perspective) {
+  PublicEventTrace trace;
+  if (bundle.public_event_extractor) {
+    trace = bundle.public_event_extractor(before, action, after, perspective);
+  }
+  const int actor = before.current_player();
+  bt.observe_public_event(actor, action, trace.pre_events, trace.post_events);
+}
 
 std::any py_to_any(const py::handle& obj);
 
@@ -139,7 +164,6 @@ py::dict result_to_py(const runtime::SelfplayEpisodeResult& result) {
   out["tail_solve_completed"] = result.tail_solve_completed;
   out["tail_solve_successes"] = result.tail_solve_successes;
   out["tail_solve_total_ms"] = result.tail_solve_total_ms;
-  out["traversal_stops"] = result.total_traversal_stops;
 
   if (!result.custom_stats.empty()) {
     py::dict stats;
@@ -223,7 +247,7 @@ py::dict run_selfplay_episode_py(
   auto bundle = GameRegistry::instance().create_game(game_id, seed);
   // For tracing we need a SECOND bundle (and its belief_tracker) dedicated
   // to the traced perspective. The primary bundle's tracker is re-init'd
-  // every ply by run_selfplay_episode (for MCTS NoPeek from current player).
+  // every ply by run_selfplay_episode for the current acting player's MCTS.
   std::unique_ptr<GameBundle> trace_bundle;
   IBeliefTracker* trace_bt = nullptr;
   runtime::PublicEventExtractor trace_extractor;
@@ -282,21 +306,17 @@ py::dict run_selfplay_episode_py(
     cfg.temperature_schedule.decay_plies = temperature_decay_plies;
   }
 
-  runtime::TraversalLimiterFactory limiter_factory;
   IBeliefTracker* bt = bundle.belief_tracker.get();
-  if (nopeek_enabled && bt && bundle.stochastic_detector) {
-    const std::uint64_t limiter_seed = seed ^ 0x9E3779B97F4A7C15ULL;
-    limiter_factory = [&bundle, bt, limiter_seed]() -> std::unique_ptr<search::INetMctsTraversalLimiter> {
-      runtime::NoPeekConfig np;
-      np.enable_chance_sampling = bundle.enable_chance_sampling;
-      return std::make_unique<runtime::NoPeekTraversalLimiter>(
-          np, bundle.stochastic_detector, *bt, *bundle.rules, limiter_seed);
-    };
+  // nopeek_enabled is the legacy selfplay peek-disable flag. In ISMCTS-v2
+  // the "peek" semantics moves to: when nopeek_enabled is FALSE, skip
+  // root-sampling entirely (MCTS sees truth). Peek is useful as a training-
+  // early-stage enhancement where value head learns from omniscient rollouts.
+  if (!nopeek_enabled) {
+    bt = nullptr;  // let MCTS see truth without root-sampling
   }
 
   auto result = runtime::run_selfplay_episode(
       *bundle.state, *bundle.rules, *bundle.value_model, *eval_ptr, cfg, seed,
-      limiter_factory,
       bt,
       bundle.encoder.get(),
       bundle.tail_solver.get(),
@@ -366,18 +386,7 @@ py::dict run_arena_match_py(
     player_configs.push_back(cfg);
   }
 
-  runtime::TraversalLimiterFactory arena_limiter_factory;
   IBeliefTracker* arena_bt = bundle.belief_tracker.get();
-  if (arena_bt && bundle.stochastic_detector) {
-    const std::uint64_t arena_limiter_seed = seed ^ 0x9E3779B97F4A7C15ULL;
-    arena_limiter_factory = [&bundle, arena_bt, arena_limiter_seed]() -> std::unique_ptr<search::INetMctsTraversalLimiter> {
-      runtime::NoPeekConfig np;
-      np.enable_chance_sampling = bundle.enable_chance_sampling;
-      return std::make_unique<runtime::NoPeekTraversalLimiter>(
-          np, bundle.stochastic_detector, *arena_bt, *bundle.rules, arena_limiter_seed);
-    };
-  }
-
   const size_t n_eval = eval_ptrs.size();
   auto result = runtime::run_arena_match(
       *bundle.state, *bundle.rules, *bundle.value_model,
@@ -385,7 +394,9 @@ py::dict run_arena_match_py(
         return *eval_ptrs[static_cast<size_t>(player) % n_eval];
       },
       player_configs, max_game_plies, seed,
-      arena_limiter_factory, arena_bt, bundle.adjudicator);
+      arena_bt, bundle.adjudicator,
+      bundle.public_event_extractor,
+      bundle.initial_observation_extractor);
 
   py::gil_scoped_acquire acquire;
   py::dict out;
@@ -403,7 +414,6 @@ py::dict run_arena_match_py(
     ply_stats.append(d);
   }
   out["ply_stats"] = ply_stats;
-  out["traversal_stops"] = result.total_traversal_stops;
   return out;
 }
 
@@ -437,20 +447,11 @@ py::dict run_constrained_eval_vs_heuristic_py(
 
   auto state = bundle.state->clone_state();
   int ply = 0;
-  int total_ts = 0;
   std::vector<ActionId> action_history;
   std::vector<runtime::ArenaPlyStats> ply_stats_vec;
 
   std::mt19937_64 rng(seed ^ 0xBEEF);
-
-  std::unique_ptr<runtime::NoPeekTraversalLimiter> limiter;
   IBeliefTracker* bt = bundle.belief_tracker.get();
-  if (bt && bundle.stochastic_detector) {
-    runtime::NoPeekConfig np;
-    np.enable_chance_sampling = bundle.enable_chance_sampling;
-    limiter = std::make_unique<runtime::NoPeekTraversalLimiter>(
-        np, bundle.stochastic_detector, *bt, *bundle.rules, seed);
-  }
 
   while (!state->is_terminal() && ply < 500) {
     const int cp = state->current_player();
@@ -461,12 +462,14 @@ py::dict run_constrained_eval_vs_heuristic_py(
       const auto legal = rules_for_model.legal_actions(*state);
       if (legal.empty()) break;
 
-      if (bt) bt->init(*state, cp);
+      if (bt) tracker_init(*bt, bundle, *state, cp);
 
       search::NetMctsConfig mcts_cfg{};
       mcts_cfg.simulations = simulations;
       mcts_cfg.c_puct = 1.4f;
-      mcts_cfg.traversal_limiter = limiter.get();
+      if (bt) {
+        mcts_cfg.root_belief_tracker = bt;
+      }
 
       if (bundle.tail_solver) {
         bool try_ts = false;
@@ -494,13 +497,12 @@ py::dict run_constrained_eval_vs_heuristic_py(
           stats.root_actions, stats.root_action_visits, 0.0,
           seed ^ static_cast<std::uint64_t>(ply), legal[0]);
 
-      total_ts += stats.traversal_stops;
       action_history.push_back(chosen);
       ply_stats_vec.push_back({stats.tail_solved, stats.tail_solve_value});
       std::unique_ptr<IGameState> state_before;
       if (bt) state_before = state->clone_state();
       bundle.rules->do_action_fast(*state, chosen);
-      if (bt) bt->observe_action(*state_before, chosen, *state);
+      if (bt) tracker_observe(*bt, bundle, *state_before, chosen, *state, cp);
     } else {
       if (!bundle.heuristic_picker) break;
       auto hr = bundle.heuristic_picker(*state, *bundle.rules, rng());
@@ -515,9 +517,8 @@ py::dict run_constrained_eval_vs_heuristic_py(
       std::unique_ptr<IGameState> state_before;
       if (bt) state_before = state->clone_state();
       bundle.rules->do_action_fast(*state, chosen);
-      if (bt) bt->observe_action(*state_before, chosen, *state);
+      if (bt) tracker_observe(*bt, bundle, *state_before, chosen, *state, cp);
     }
-    if (limiter) limiter->on_ply_complete();
     ++ply;
   }
 
@@ -536,7 +537,6 @@ py::dict run_constrained_eval_vs_heuristic_py(
   out["winner"] = winner;
   out["draw"] = draw;
   out["total_plies"] = ply;
-  out["traversal_stops"] = total_ts;
   py::list actions;
   for (auto a : action_history) actions.append(static_cast<int>(a));
   out["action_history"] = actions;
@@ -588,15 +588,28 @@ py::dict encode_state_py(
   const int action_space = bundle.encoder->action_space();
   const int feature_dim = bundle.encoder->feature_dim();
 
+  // Also compute the public/private split so tests can verify the
+  // structural invariant (changing an opp's private shouldn't affect
+  // encode_private for perspective, etc.).
+  std::vector<float> public_features, private_features;
+  bundle.encoder->encode_public(*bundle.state, player, &public_features);
+  bundle.encoder->encode_private(*bundle.state, player, &private_features);
+  const int public_dim = bundle.encoder->public_feature_dim();
+  const int private_dim = bundle.encoder->private_feature_dim();
+
   py::gil_scoped_acquire acquire;
   py::dict out;
   out["features"] = features;
+  out["public_features"] = public_features;
+  out["private_features"] = private_features;
   out["legal_mask"] = legal_mask;
   out["legal_actions"] = legal;
   out["current_player"] = player;
   out["is_terminal"] = is_terminal;
   out["action_space"] = action_space;
   out["feature_dim"] = feature_dim;
+  out["public_feature_dim"] = public_dim;
+  out["private_feature_dim"] = private_dim;
   return out;
 }
 
@@ -656,11 +669,77 @@ class GameSessionWrapper {
           *bundle_->rules, bundle_->training_action_filter);
     }
     bt_ = bundle_->belief_tracker.get();
-    if (bt_ && bundle_->stochastic_detector) {
-      runtime::NoPeekConfig np;
-      np.enable_chance_sampling = bundle_->enable_chance_sampling;
-      limiter_ = std::make_unique<runtime::NoPeekTraversalLimiter>(
-          np, bundle_->stochastic_detector, *bt_, *bundle_->rules, seed);
+    // Per-perspective AI views: MCTS searches on these, never on the truth
+    // state (bundle_->state). Skipped when external_obs_mode_ is set
+    // (AI API path) — in that mode bundle_->state IS the AI view.
+    init_ai_views_();
+  }
+
+  void init_ai_views_() {
+    if (external_obs_mode_) return;
+    const int n = bundle_->state->num_players();
+    ai_views_.resize(static_cast<size_t>(n));
+    ai_trackers_.resize(static_cast<size_t>(n));
+    ai_encoders_.resize(static_cast<size_t>(n));
+    ai_evaluators_.resize(static_cast<size_t>(n));
+    for (int p = 0; p < n; ++p) {
+      auto extra = GameRegistry::instance().create_game(game_id_, seed_);
+      ai_trackers_[p] = std::move(extra.belief_tracker);
+      ai_encoders_[p] = std::move(extra.encoder);
+
+      ai_views_[p] = bundle_->state->clone_state();
+      if (bundle_->initial_observation_extractor &&
+          bundle_->initial_observation_applier) {
+        AnyMap obs = bundle_->initial_observation_extractor(*bundle_->state, p);
+        bundle_->initial_observation_applier(*ai_views_[p], p, obs);
+      }
+      if (ai_trackers_[p]) {
+        tracker_init(*ai_trackers_[p], *bundle_, *ai_views_[p], p);
+      }
+      if (!model_path_.empty() && ai_encoders_[p]) {
+        ai_evaluators_[p] = std::make_unique<infer::OnnxPolicyValueEvaluator>(
+            model_path_, ai_encoders_[p].get());
+        if (!ai_evaluators_[p]->is_ready()) {
+          throw std::runtime_error(
+              "GameSession: failed to load model (ai_view[" + std::to_string(p) +
+              "]): " + ai_evaluators_[p]->last_error());
+        }
+      }
+    }
+  }
+
+  // Advance ai_view for a single perspective using the public-event
+  // protocol: extract events from the truth transition for this observer,
+  // then apply (pre-events → action → post-events) on ai_views_[p]. This
+  // mirrors what the external AI API would see through apply_observation.
+  void advance_ai_view_(int perspective, const IGameState& truth_before,
+                        ActionId action) {
+    if (perspective < 0 || perspective >= static_cast<int>(ai_views_.size())) return;
+    if (!ai_views_[perspective]) return;
+    const int actor = truth_before.current_player();
+    if (!bundle_->public_event_extractor || !bundle_->public_event_applier) {
+      // Fully-public game: just replay the action on ai_view, tracker
+      // gets empty events (it has no hidden info to track).
+      bundle_->rules->do_action_fast(*ai_views_[perspective], action);
+      if (ai_trackers_[perspective]) {
+        ai_trackers_[perspective]->observe_public_event(actor, action, {}, {});
+      }
+      return;
+    }
+    PublicEventTrace trace = bundle_->public_event_extractor(
+        truth_before, action, *bundle_->state, perspective);
+    for (const auto& [kind, payload] : trace.pre_events) {
+      bundle_->public_event_applier(
+          *ai_views_[perspective], EventPhase::kPreAction, kind, payload);
+    }
+    bundle_->rules->do_action_fast(*ai_views_[perspective], action);
+    for (const auto& [kind, payload] : trace.post_events) {
+      bundle_->public_event_applier(
+          *ai_views_[perspective], EventPhase::kPostAction, kind, payload);
+    }
+    if (ai_trackers_[perspective]) {
+      ai_trackers_[perspective]->observe_public_event(
+          actor, action, trace.pre_events, trace.post_events);
     }
   }
 
@@ -706,24 +785,35 @@ class GameSessionWrapper {
 
   void apply_action(ActionId action) {
     py::gil_scoped_release release;
-    std::unique_ptr<IGameState> state_before;
-    if (bt_) state_before = bundle_->state->clone_state();
+    const int actor = bundle_->state->current_player();
+    std::unique_ptr<IGameState> state_before = bundle_->state->clone_state();
     bundle_->rules->do_action_fast(*bundle_->state, action);
-    if (bt_) bt_->observe_action(*state_before, action, *bundle_->state);
-    if (limiter_) limiter_->on_ply_complete();
+    if (bt_) {
+      tracker_observe(*bt_, *bundle_, *state_before, action, *bundle_->state,
+                      actor);
+    }
+
+    // Advance each perspective's AI view via the public-event protocol.
+    if (!external_obs_mode_) {
+      const int n = static_cast<int>(ai_views_.size());
+      for (int p = 0; p < n; ++p) {
+        advance_ai_view_(p, *state_before, action);
+      }
+    }
     ++ply_count_;
   }
 
   // Combined action + events step for the AI API. Sequence:
-  //   1. Snapshot state_before
+  //   1. Snapshot actor = current_player (before the action)
   //   2. Apply all pre-action events (hidden info the action depends on)
   //   3. Apply the action itself
   //   4. Apply all post-action events (override random outcomes)
-  //   5. belief_tracker.observe_action(state_before, action, FINAL state)
+  //   5. belief_tracker.observe_public_event(actor, action, pre, post)
   //
-  // This is critical: the belief tracker must see the POST-EVENT state as
-  // its state_after, otherwise it records the AI's own random outcomes
-  // (which differ from ground truth) instead of what actually happened.
+  // Tracker is fed the event payloads directly — no state ref crosses its
+  // interface. Pre/post lists are the same events the extractor would have
+  // produced on a selfplay state diff, so tracker behavior matches across
+  // selfplay and API paths (enforced by test_api_belief_matches_selfplay).
   //
   // `pre_events` / `post_events` are lists of {"kind": str, "payload": dict}.
   void apply_observation(ActionId action,
@@ -748,7 +838,8 @@ class GameSessionWrapper {
     convert(post_events, post_list);
 
     py::gil_scoped_release release;
-    std::unique_ptr<IGameState> state_before = bundle_->state->clone_state();
+    external_obs_mode_ = true;
+    const int actor = bundle_->state->current_player();
     for (const auto& [kind, payload] : pre_list) {
       bundle_->public_event_applier(*bundle_->state, EventPhase::kPreAction, kind, payload);
     }
@@ -756,8 +847,18 @@ class GameSessionWrapper {
     for (const auto& [kind, payload] : post_list) {
       bundle_->public_event_applier(*bundle_->state, EventPhase::kPostAction, kind, payload);
     }
-    if (bt_) bt_->observe_action(*state_before, action, *bundle_->state);
-    if (limiter_) limiter_->on_ply_complete();
+    if (bt_) {
+      // In API mode, the caller provides the event stream directly — feed
+      // it straight to the tracker. No state-diff extraction needed.
+      std::vector<PublicEvent> pre_events_v(pre_list.begin(), pre_list.end());
+      std::vector<PublicEvent> post_events_v(post_list.begin(), post_list.end());
+      bt_->observe_public_event(actor, action, pre_events_v, post_events_v);
+      // Give the tracker a chance to reconcile public state invariants
+      // that per-event appliers can't maintain (e.g. Splendor deck size
+      // drifts when slot-shift and deck-draw are conflated in deck_flip
+      // events). Default implementation is a no-op.
+      bt_->reconcile_state(*bundle_->state);
+    }
     ++ply_count_;
   }
 
@@ -781,6 +882,10 @@ class GameSessionWrapper {
     else throw std::invalid_argument("apply_event: phase must be 'pre' or 'post', got '" + phase + "'");
     AnyMap payload_map = py_dict_to_any_map(payload);
     py::gil_scoped_release release;
+    // Switch into external observation mode: caller now drives the state
+    // via the public-event protocol, so bundle_->state IS the AI view.
+    // ai_views_ (set up in the constructor) are discarded as stale.
+    external_obs_mode_ = true;
     bundle_->public_event_applier(*bundle_->state, ph, kind, payload_map);
   }
 
@@ -796,8 +901,9 @@ class GameSessionWrapper {
     }
     AnyMap obs_map = py_dict_to_any_map(initial_obs);
     py::gil_scoped_release release;
+    external_obs_mode_ = true;
     bundle_->initial_observation_applier(*bundle_->state, perspective_player, obs_map);
-    if (bt_) bt_->init(*bundle_->state, perspective_player);
+    if (bt_) bt_->init(perspective_player, obs_map);
   }
 
   // Return the belief tracker's serialized state as a dict. Canonical form:
@@ -821,29 +927,52 @@ class GameSessionWrapper {
     py::gil_scoped_release release;
 
     const IGameRules& rules = filtered_rules_ ? *filtered_rules_ : *bundle_->rules;
-    const auto legal = rules.legal_actions(*bundle_->state);
+    const int cp = bundle_->state->current_player();
+
+    // Select the search state / evaluator / tracker.
+    // External-obs mode (AI API): bundle_->state IS the AI view.
+    // GameSession mode: route through perspective-specific ai_views_[cp].
+    const IGameState* search_state = nullptr;
+    const search::IPolicyValueEvaluator* eval_ptr = nullptr;
+    IBeliefTracker* search_bt = nullptr;
+    if (external_obs_mode_) {
+      search_state = bundle_->state.get();
+      eval_ptr = evaluator_.get();
+      search_bt = bt_;
+    } else {
+      if (cp < 0 || cp >= static_cast<int>(ai_views_.size()) || !ai_views_[cp]) {
+        throw std::runtime_error(
+            "GameSession.get_ai_action: ai_view for current player not initialized");
+      }
+      search_state = ai_views_[cp].get();
+      eval_ptr = ai_evaluators_[cp].get();
+      search_bt = ai_trackers_[cp].get();
+    }
+
+    const auto legal = rules.legal_actions(*search_state);
     if (legal.empty()) {
       py::gil_scoped_acquire acquire;
       return py::dict();
     }
 
-    if (!evaluator_) {
-      throw std::runtime_error("GameSession.get_ai_action: no model loaded — create session with model_path");
+    if (!eval_ptr) {
+      throw std::runtime_error(
+          "GameSession.get_ai_action: no model loaded — create session with model_path");
     }
-    const search::IPolicyValueEvaluator* eval_ptr = evaluator_.get();
 
-    if (bt_) bt_->init(*bundle_->state, bundle_->state->current_player());
-
+    // ISMCTS-v2: root-sampling hidden info + DAG per-acting-player keying.
     search::NetMctsConfig mcts_cfg{};
     mcts_cfg.simulations = simulations;
     mcts_cfg.c_puct = 1.4f;
-    mcts_cfg.traversal_limiter = limiter_.get();
+    if (search_bt) {
+      mcts_cfg.root_belief_tracker = search_bt;
+    }
 
     if (ts_enabled_ && bundle_->tail_solver) {
       int ply = static_cast<int>(ply_count_);
       bool try_ts = false;
       if (bundle_->tail_solve_trigger) {
-        try_ts = bundle_->tail_solve_trigger(*bundle_->state, ply);
+        try_ts = bundle_->tail_solve_trigger(*search_state, ply);
       } else {
         try_ts = true;
       }
@@ -859,12 +988,14 @@ class GameSessionWrapper {
     search::NetMctsStats stats{};
     const std::uint64_t mcts_seed = seed_ ^
         (static_cast<std::uint64_t>(ply_count_) * kGoldenRatio64) ^ 0x243F6A8885A308D3ULL;
-    mcts.search_root(*bundle_->state, rules, *bundle_->value_model,
+    mcts.search_root(*search_state, rules, *bundle_->value_model,
                       *eval_ptr, &stats, mcts_seed);
 
-    std::uint64_t action_seed = seed_ ^
-        static_cast<std::uint64_t>(
-            std::chrono::steady_clock::now().time_since_epoch().count());
+    // Deterministic action_seed: any non-deterministic component (e.g.
+    // wall-clock) here would make argmax tie-breaks flaky across runs
+    // even at temperature=0. Derive from (seed_, ply_count_) instead so
+    // the session's action sequence is fully reproducible from its seed.
+    std::uint64_t action_seed = mcts_seed ^ 0xBF58476D1CE4E5B9ULL;
     ActionId chosen = search::select_action_from_visits(
         stats.root_actions, stats.root_action_visits,
         temperature, action_seed, legal[0]);
@@ -888,9 +1019,24 @@ class GameSessionWrapper {
       }
     }
     st["action_values"] = wm;
+    // Expose root visit distribution so tests can compare the full
+    // MCTS policy across paths (selfplay vs API), not just argmax.
+    // This is the signal that would catch a subtle info leak biasing
+    // one path's priors without flipping the top pick.
+    py::list root_actions_py;
+    py::list root_visits_py;
+    for (size_t ei = 0; ei < stats.root_actions.size(); ++ei) {
+      root_actions_py.append(static_cast<int>(stats.root_actions[ei]));
+      int v = ei < stats.root_action_visits.size() ? stats.root_action_visits[ei] : 0;
+      root_visits_py.append(v);
+    }
+    st["root_actions"] = root_actions_py;
+    st["root_action_visits"] = root_visits_py;
     st["tail_solved"] = stats.tail_solved;
     st["tail_solve_value"] = stats.tail_solve_value;
-    st["traversal_stops"] = stats.traversal_stops;
+    st["dag_reuse_hits"] = stats.dag_reuse_hits;
+    st["expanded_nodes"] = stats.expanded_nodes;
+    st["simulations"] = stats.simulations_done;
     out["stats"] = st;
     return out;
   }
@@ -941,12 +1087,21 @@ class GameSessionWrapper {
   std::unique_ptr<GameBundle> bundle_;
   std::unique_ptr<infer::OnnxPolicyValueEvaluator> evaluator_;
   std::unique_ptr<runtime::FilteredRulesWrapper> filtered_rules_;
-  std::unique_ptr<runtime::NoPeekTraversalLimiter> limiter_;
   IBeliefTracker* bt_ = nullptr;
   std::size_t ply_count_ = 0;
   bool ts_enabled_ = false;
   int ts_depth_limit_ = 10;
   std::int64_t ts_node_budget_ = 200000;
+
+  // Per-perspective AI views. Populated by the constructor via the
+  // initial-observation protocol (unless external_obs_mode_ flips on
+  // first — see comments at init_ai_views_). get_ai_action routes MCTS
+  // through these so searches never read hidden fields from bundle_->state.
+  std::vector<std::unique_ptr<IGameState>> ai_views_;
+  std::vector<std::unique_ptr<IBeliefTracker>> ai_trackers_;
+  std::vector<std::unique_ptr<IFeatureEncoder>> ai_encoders_;
+  std::vector<std::unique_ptr<infer::OnnxPolicyValueEvaluator>> ai_evaluators_;
+  bool external_obs_mode_ = false;
 };
 
 py::dict test_belief_tracker_py(
@@ -964,7 +1119,7 @@ py::dict test_belief_tracker_py(
 
   auto state = bundle.state->clone_state();
   IBeliefTracker* bt = bundle.belief_tracker.get();
-  bt->init(*state, 0);
+  tracker_init(*bt, bundle, *state, 0);
 
   std::mt19937_64 rng(seed);
   int actual_plies = 0;
@@ -975,8 +1130,7 @@ py::dict test_belief_tracker_py(
     ActionId chosen = legal[idx];
     auto state_before = state->clone_state();
     bundle.rules->do_action_fast(*state, chosen);
-    bt->observe_action(*state_before, chosen, *state);
-    bt->init(*state, 0);
+    tracker_observe(*bt, bundle, *state_before, chosen, *state, 0);
     actual_plies += 1;
   }
 

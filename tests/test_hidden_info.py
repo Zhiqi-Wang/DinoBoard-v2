@@ -95,7 +95,7 @@ class TestSplendorHiddenInfo:
 
 
 # ---------------------------------------------------------------------------
-# Azul: truncation mode (enable_chance_sampling=false)
+# Azul: bag-sampled randomness (randomize_unseen shuffles bag at root)
 # ---------------------------------------------------------------------------
 
 class TestAzulHiddenInfo:
@@ -209,57 +209,37 @@ class TestSplendorBeliefTracker:
 
 
 # ---------------------------------------------------------------------------
-# NoPeek activation verification: traversal_stops > 0 proves limiter fired
+# MCTS hidden-info handling — ISMCTS-v2 routes belief-tracker games through
+# root sampling; there's no NoPeek / traversal_limiter mechanism. These tests
+# just check that selfplay/arena completes on hidden-info games. The "does
+# MCTS actually hide opponent info" invariant is covered by
+# TestLoveLetterGuardAccuracy in tests/test_hidden_info_coup_loveletter.py.
 # ---------------------------------------------------------------------------
 
-class TestNoPeekActivation:
+class TestHiddenInfoSelfplay:
 
-    def test_splendor_selfplay_has_traversal_stops(self):
-        """Splendor MCTS must trigger traversal stops (NoPeek active)."""
+    def test_splendor_selfplay_runs(self):
         ep = dinoboard_engine.run_selfplay_episode(
             game_id="splendor", seed=42, model_path=get_test_model("splendor"),
             simulations=50, max_game_plies=40,
         )
-        assert ep["traversal_stops"] > 0, "NoPeek limiter never triggered in Splendor selfplay"
+        assert ep["total_plies"] > 0
 
-    def test_azul_selfplay_has_traversal_stops(self):
-        """Azul MCTS must trigger traversal stops (truncation active).
-
-        Azul stochastic transitions happen at round boundaries (factory refill),
-        so the game must be long enough to cross at least one round boundary
-        during MCTS search.
-        """
+    def test_azul_selfplay_runs(self):
         ep = dinoboard_engine.run_selfplay_episode(
             game_id="azul", seed=42, model_path=get_test_model("azul"),
             simulations=100, max_game_plies=200,
         )
-        assert ep["traversal_stops"] > 0, "Truncation limiter never triggered in Azul selfplay"
+        assert ep["total_plies"] > 0
 
-    def test_splendor_arena_has_traversal_stops(self):
-        """Splendor arena must trigger traversal stops."""
+    def test_splendor_arena_runs(self):
         m = get_test_model("splendor")
         result = dinoboard_engine.run_arena_match(
             game_id="splendor", seed=42,
             model_paths=[m, m],
             simulations_list=[30, 30], temperature=0.0,
         )
-        assert result["traversal_stops"] > 0, "NoPeek limiter never triggered in Splendor arena"
-
-    def test_tictactoe_selfplay_no_traversal_stops(self):
-        """TicTacToe is deterministic — traversal_stops must be 0."""
-        ep = dinoboard_engine.run_selfplay_episode(
-            game_id="tictactoe", seed=42, model_path=get_test_model("tictactoe"),
-            simulations=50, max_game_plies=20,
-        )
-        assert ep["traversal_stops"] == 0, "Unexpected traversal stops in deterministic TicTacToe"
-
-    def test_quoridor_selfplay_no_traversal_stops(self):
-        """Quoridor is deterministic — traversal_stops must be 0."""
-        ep = dinoboard_engine.run_selfplay_episode(
-            game_id="quoridor", seed=42, model_path=get_test_model("quoridor"),
-            simulations=20, max_game_plies=30,
-        )
-        assert ep["traversal_stops"] == 0, "Unexpected traversal stops in deterministic Quoridor"
+        assert result["total_plies"] > 0
 
 
 @pytest.mark.parametrize("game_id", ["splendor", "azul"])
