@@ -17,8 +17,16 @@ from .sessions import (
 )
 from .replay import build_analysis_dict, make_replay_frame
 
-PIPELINE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pipeline")
-PRECOMPUTE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="precompute")
+import os
+
+# Pool size defaults to (cpu_count - 2), min 2, capped at 16 — leaves headroom
+# for uvicorn + system. Tunable via DINOBOARD_PIPELINE_WORKERS env var.
+_DEFAULT_WORKERS = max(2, min(16, (os.cpu_count() or 4) - 2))
+_PIPELINE_WORKERS = int(os.environ.get("DINOBOARD_PIPELINE_WORKERS", _DEFAULT_WORKERS))
+_PRECOMPUTE_WORKERS = int(os.environ.get("DINOBOARD_PRECOMPUTE_WORKERS", _PIPELINE_WORKERS))
+
+PIPELINE_EXECUTOR = ThreadPoolExecutor(max_workers=_PIPELINE_WORKERS, thread_name_prefix="pipeline")
+PRECOMPUTE_EXECUTOR = ThreadPoolExecutor(max_workers=_PRECOMPUTE_WORKERS, thread_name_prefix="precompute")
 
 DEFAULT_ANALYSIS_SIMULATIONS = 5000
 
