@@ -111,31 +111,30 @@ DELETE /ai/sessions/{id}                  → 结束会话
 ## 架构
 
 ```
-┌───────────────────────────────────────────────────────┐
-│                    Python 层                          │
-│  training/pipeline.py  ←→  bindings/py_engine.cpp     │
-│  training/cli.py            (pybind11)                │
-│  platform/app.py       ←→  GameSession                │
-├───────────────────────────────────────────────────────┤
-│                    C++ 引擎                           │
-│  ┌──────────┐  ┌────────────┐  ┌──────────────────┐   │
-│  │ runtime/ │  │ search/    │  │ infer/           │   │
-│  │ selfplay │→ │ NetMCTS    │→ │ ONNX Evaluator   │   │
-│  │ arena    │  │ (ISMCTS    │  │ (可选 ONNX)      │   │
-│  │ heuristic│  │  DAG)      │  │                  │   │
-│  └──────────┘  │ TailSolver │  └──────────────────┘   │
-│                └────────────┘                         │
-│  ┌────────────────────────────────────────────────┐   │
-│  │ core/ — 接口定义                                 │   │
-│  │ IGameState · IGameRules · IFeatureEncoder      │   │
-│  │ IBeliefTracker · GameRegistry · GameBundle     │   │
-│  └────────────────────────────────────────────────┘   │
-├───────────────────────────────────────────────────────┤
-│                    游戏实现                           │
-│  games/tictactoe/  games/quoridor/                    │
-│  games/splendor/   games/azul/                        │
-│  games/loveletter/ games/coup/                        │
-└───────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                    Python 层                            │
+│  training/pipeline.py  ←→  bindings/py_engine.cpp       │
+│  training/cli.py            (pybind11)                  │
+│  platform/app.py       ←→  GameSession                  │
+├─────────────────────────────────────────────────────────┤
+│                    C++ 引擎                             │
+│  ┌──────────┐  ┌──────────────┐  ┌──────────────────┐   │
+│  │ runtime/ │  │ search/      │  │ infer/           │   │
+│  │ selfplay │→ │ NetMCTS      │→ │ ONNX Evaluator   │   │
+│  │ arena    │  │ (ISMCTS DAG) │  │ (可选 ONNX)      │   │
+│  │ heuristic│  │ TailSolver   │  │                  │   │
+│  └──────────┘  └──────────────┘  └──────────────────┘   │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │ core/ — 接口定义                                   │   │
+│  │ IGameState · IGameRules · IFeatureEncoder        │   │
+│  │ IBeliefTracker · GameRegistry · GameBundle       │   │
+│  └──────────────────────────────────────────────────┘   │
+├─────────────────────────────────────────────────────────┤
+│                    游戏实现                             │
+│  games/tictactoe/  games/quoridor/                      │
+│  games/splendor/   games/azul/                          │
+│  games/loveletter/ games/coup/                          │
+└─────────────────────────────────────────────────────────┘
 ```
 
 完整目录树、每个文件的职责见本文末尾。

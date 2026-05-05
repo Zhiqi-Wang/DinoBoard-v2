@@ -111,31 +111,30 @@ This flow works in practice because every integration point has a **mechanically
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────────┐
-│                    Python layer                       │
-│  training/pipeline.py  ←→  bindings/py_engine.cpp     │
-│  training/cli.py            (pybind11)                │
-│  platform/app.py       ←→  GameSession                │
-├───────────────────────────────────────────────────────┤
-│                    C++ engine                         │
-│  ┌──────────┐  ┌────────────┐  ┌──────────────────┐   │
-│  │ runtime/ │  │ search/    │  │ infer/           │   │
-│  │ selfplay │→ │ NetMCTS    │→ │ ONNX Evaluator   │   │
-│  │ arena    │  │ (ISMCTS    │  │ (optional ONNX)  │   │
-│  │ heuristic│  │  DAG)      │  │                  │   │
-│  └──────────┘  │ TailSolver │  └──────────────────┘   │
-│                └────────────┘                         │
-│  ┌────────────────────────────────────────────────┐   │
-│  │ core/ — interface definitions                  │   │
-│  │ IGameState · IGameRules · IFeatureEncoder      │   │
-│  │ IBeliefTracker · GameRegistry · GameBundle     │   │
-│  └────────────────────────────────────────────────┘   │
-├───────────────────────────────────────────────────────┤
-│                    Game implementations               │
-│  games/tictactoe/  games/quoridor/                    │
-│  games/splendor/   games/azul/                        │
-│  games/loveletter/ games/coup/                        │
-└───────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                    Python layer                         │
+│  training/pipeline.py  ←→  bindings/py_engine.cpp       │
+│  training/cli.py            (pybind11)                  │
+│  platform/app.py       ←→  GameSession                  │
+├─────────────────────────────────────────────────────────┤
+│                    C++ engine                           │
+│  ┌──────────┐  ┌──────────────┐  ┌──────────────────┐   │
+│  │ runtime/ │  │ search/      │  │ infer/           │   │
+│  │ selfplay │→ │ NetMCTS      │→ │ ONNX Evaluator   │   │
+│  │ arena    │  │ (ISMCTS DAG) │  │ (optional ONNX)  │   │
+│  │ heuristic│  │ TailSolver   │  │                  │   │
+│  └──────────┘  └──────────────┘  └──────────────────┘   │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │ core/ — interface definitions                    │   │
+│  │ IGameState · IGameRules · IFeatureEncoder        │   │
+│  │ IBeliefTracker · GameRegistry · GameBundle       │   │
+│  └──────────────────────────────────────────────────┘   │
+├─────────────────────────────────────────────────────────┤
+│                    Game implementations                 │
+│  games/tictactoe/  games/quoridor/                      │
+│  games/splendor/   games/azul/                          │
+│  games/loveletter/ games/coup/                          │
+└─────────────────────────────────────────────────────────┘
 ```
 
 Full directory tree at the bottom of this file.
