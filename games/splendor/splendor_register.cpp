@@ -68,7 +68,13 @@ AnyMap serialize_splendor(const IGameState& state) {
       int card_id = d.reserved[p][ri];
       bool visible = d.reserved_visible[p][ri] != 0;
       rc["visible"] = std::any(visible);
-      if (visible && card_id >= 0 && card_id < static_cast<int>(pool.size())) {
+      // Always serialize full card info whenever card_id is valid, even for
+      // deck-reserved (visible=false). The owner always knows their own
+      // reserved card, so the web UI must receive its face for rendering.
+      // The frontend uses `(visible || isHuman)` to decide whether to show
+      // the face or the card back, so opponents' deck-reserved slots still
+      // render as a hidden placeholder.
+      if (card_id >= 0 && card_id < static_cast<int>(pool.size())) {
         const auto& card = pool[card_id];
         rc["tier"] = std::any(static_cast<int>(card.tier));
         rc["bonus"] = std::any(static_cast<int>(card.bonus));
