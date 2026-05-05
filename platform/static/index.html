@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DinoBoard Intelligence</title>
+<title>DinoBoard</title>
 <link rel="stylesheet" href="/static/common.css">
 <style>
 .home-stage {
@@ -76,15 +76,15 @@
 <body>
 <main class="layout">
   <aside class="sidebar">
-    <h1>DinoBoard Intelligence</h1>
+    <h1>DinoBoard</h1>
     <div class="card">
       <h2>选择游戏</h2>
       <div class="muted">点击右侧游戏卡片进入对局</div>
     </div>
   </aside>
   <section class="home-stage">
-    <h2>DinoBoard Intelligence</h2>
-    <div class="home-subtitle">通用棋类 AI 平台</div>
+    <h2>DinoBoard</h2>
+    <div class="home-subtitle">通用桌游 AI 平台</div>
     <div id="games" class="game-grid"></div>
   </section>
 </main>
@@ -110,7 +110,7 @@ async function init() {
     const info = document.createElement('div');
     info.className = 'game-info';
     const p = game.players;
-    info.textContent = p.min === p.max ? p.min + ' 人' : p.min + '-' + p.max + ' 人';
+    info.textContent = p.min === p.max ? p.min + ' 人' : p.min + ' - ' + p.max + ' 人';
 
     if (!game.has_web) {
       const badge = document.createElement('div');
