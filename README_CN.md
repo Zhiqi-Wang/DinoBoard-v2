@@ -118,12 +118,12 @@ DELETE /ai/sessions/{id}                  → 结束会话
 │  platform/app.py       ←→  GameSession              │
 ├─────────────────────────────────────────────────────┤
 │                    C++ 引擎                          │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │
-│  │ runtime/  │  │ search/  │  │ infer/           │  │
-│  │ selfplay  │→ │ NetMCTS  │→ │ ONNX Evaluator   │  │
-│  │ arena     │  │ (ISMCTS- │  │ (可选 ONNX RT)    │  │
-│  │ heuristic │  │  v2 DAG) │  │                   │  │
-│  └──────────┘  │ TailSolv │  └──────────────────┘  │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────────┐   │
+│  │ runtime/ │  │ search/  │  │ infer/           │   │
+│  │ selfplay │→ │ NetMCTS  │→ │ ONNX Evaluator   │   │
+│  │ arena    │  │ (ISMCTS  │  │ (可选 ONNX)      │   │
+│  │ heuristic│  │  DAG)    │  │                  │   │
+│  └──────────┘  │ TailSolv │  └──────────────────┘   │
 │                └──────────┘                         │
 │  ┌──────────────────────────────────────────────┐   │
 │  │ core/ — 接口定义                               │   │
