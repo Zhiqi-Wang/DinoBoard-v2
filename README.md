@@ -149,7 +149,10 @@ The core is C++; Python is glue. You need:
 
 - **A C++17 compiler** — Mac: `xcode-select --install`; Linux: `apt install build-essential`; Windows: MSVC Build Tools
 - **Python ≥ 3.9** with `pybind11` and `torch` (for training)
-- **ONNX Runtime** — web play, self-play, and evaluation **all load `.onnx` models for the AI to move**; this is required, not optional. Mac: `brew install onnxruntime`. Linux / Windows: download the platform package from [ONNX Runtime releases](https://github.com/microsoft/onnxruntime/releases) and unpack it.
+- **ONNX Runtime** — web play, self-play, and evaluation **all load `.onnx` models for the AI to move**; this is required, not optional.
+  - **Linux x64**: already bundled in the repo at `third_party/onnxruntime-linux-x64-1.17.3/` — `git clone` is enough, no download needed.
+  - **Mac**: `brew install onnxruntime`
+  - **Windows / other Linux arch**: download the platform package from [ONNX Runtime releases](https://github.com/microsoft/onnxruntime/releases) and unpack it.
 
 ### Build
 

@@ -149,7 +149,10 @@ DELETE /ai/sessions/{id}                  → 结束会话
 
 - **C++17 编译器** — Mac: `xcode-select --install`;Linux: `apt install build-essential`;Windows: MSVC Build Tools
 - **Python ≥ 3.9** + `pybind11` + `torch`(训练用)
-- **ONNX Runtime** — Web 对战 / 自我对弈 / 评估**都要加载 `.onnx` 模型让 AI 出棋**,这是刚需不是可选。Mac: `brew install onnxruntime`;Linux/Windows: 从 [ONNX Runtime releases](https://github.com/microsoft/onnxruntime/releases) 下载对应平台的包并解压
+- **ONNX Runtime** — Web 对战 / 自我对弈 / 评估**都要加载 `.onnx` 模型让 AI 出棋**,这是刚需不是可选。
+  - **Linux x64**:已随仓库自带在 `third_party/onnxruntime-linux-x64-1.17.3/`,`git clone` 就能用,无需下载。
+  - **Mac**:`brew install onnxruntime`
+  - **Windows / 其他 Linux 架构**:从 [ONNX Runtime releases](https://github.com/microsoft/onnxruntime/releases) 下载对应平台的包并解压。
 
 ### 构建
 
