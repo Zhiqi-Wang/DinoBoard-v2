@@ -688,7 +688,7 @@ Web 平台相关的 AI 参数独立于训练配置，放在 `web.json` 中管理
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `gating_accept_win_rate` | float | 0.55 | latest vs best 的晋升阈值 |
+| `gating_accept_win_rate` | float | N 人自适应 | latest vs best 的晋升阈值。不显式设置时，框架按 `1/N` 零和基线 + 同等置信区间自动推算（见下方说明）。 |
 | `eval_temperature` | float | 0.0 | gating 和 ONNX benchmark 对局的动作选择温度。0=贪心，>0 引入随机性。确定性游戏建议 0.1 |
 
 每 `--eval-every` 步触发一轮评估，包含两部分：
@@ -712,6 +712,14 @@ python3 -m training.cli --game quoridor --output runs/quoridor_v12
 ```
 
 **Gating eval**（固定执行，不受 `--eval-benchmark` 影响）：latest vs best 对打 `--eval-games` 局，胜率 ≥ `gating_accept_win_rate` 时 `shutil.copy2` 更新 `model_best.onnx`。
+
+**多人游戏的默认阈值**：N 人零和游戏的零假设胜率是 `1/N`，不是 0.5。固定 0.55 对 2 人合适但对 3p/4p 过于宽松（null 已在 0.333 / 0.25）。框架未显式配置时自动采用：
+
+```
+threshold = 1/N + z · sqrt((1/N)·(1 - 1/N) / eval_games)
+```
+
+`z ≈ 0.632` 经校准使 (2p, 40 局) 回到历史上的 0.55，保证各人数下相对 null 有同等单边置信超出。`eval_games=40` 时大致落点：2p ≈ 0.55、3p ≈ 0.38、4p ≈ 0.29。除非确有更严或更松的业务理由，**不要在 3p/4p 游戏的 `game.json` 里硬写 0.55**——那是"永远通不过"的门槛。需要手工覆盖时在 `training.gating_accept_win_rate` 里写明白值即可。
 
 训练过程中维护两个模型文件：
 - **latest** (`model_latest.onnx`)：每步训练后都重新导出，selfplay 立刻使用新权重，**永不被替换或回退**

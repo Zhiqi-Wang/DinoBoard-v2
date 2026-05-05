@@ -5,23 +5,17 @@
   padding: 16px;
 }
 
-.coup-info-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 16px;
-  background: #1a1a2e;
-  border-radius: 8px;
-  font-size: 14px;
-}
-
+/* Stage + deck size live in the sidebar info-panel as a custom
+ * extension pill (see stageExtension in coup.js). Styles below target
+ * that pill context. */
 .coup-stage {
   color: #e8a;
   font-weight: bold;
 }
 
 .coup-deck {
-  color: #888;
+  color: #94a3b8;
+  margin-left: 12px;
 }
 
 .coup-players {
@@ -110,13 +104,43 @@
   opacity: 0.6;
 }
 
-/* Action panels */
+/* Action panels. min-height is LARGE so the panel occupies the same
+ * vertical footprint across every stage — declare (7 buttons + hint),
+ * challenge (2), counter (up to 5), reveal (2), exchange (up to 5), idle
+ * placeholder. Without this the panel shrinks when fewer buttons render
+ * and the entire board jumps. */
 .coup-action-panel {
   background: #1a1a2e;
   border: 1px solid #444;
   border-radius: 12px;
   padding: 16px;
-  min-height: 80px;
+  min-height: 140px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+}
+
+.coup-action-panel.idle {
+  opacity: 0.75;
+}
+
+.coup-action-btn-spacer {
+  min-height: 56px;
+  visibility: hidden;
+}
+
+.coup-action-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+.coup-action-btn:disabled:hover {
+  background: #2a2a4a;
+  border-color: #555;
+  transform: none !important;
+  box-shadow: none !important;
 }
 
 .coup-panel-title {
@@ -129,7 +153,10 @@
 
 .coup-action-btns {
   display: flex;
-  gap: 8px;
+  /* row-gap > column-gap: the declare panel wraps 7 buttons onto two
+   * rows in narrow layouts, and a single 8px row gap let the row-2
+   * descriptions sit right up against row-1 button borders. */
+  gap: 14px 8px;
   flex-wrap: wrap;
   justify-content: center;
 }
@@ -139,15 +166,17 @@
   color: #ccc;
   border: 2px solid #555;
   border-radius: 10px;
-  padding: 10px 16px;
+  padding: 12px 16px 14px;
   font-size: 14px;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, transform 0.1s;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 2px;
   min-width: 80px;
+  min-height: 66px;
 }
 
 .coup-action-btn:hover {
@@ -237,11 +266,14 @@
   color: #bbb;
 }
 
+/* Hint stays in the flow (not display:none) even when empty so the panel
+ * doesn't resize between "target selection pending" and "no pending". */
 .coup-pending-hint {
   color: #fa0;
   font-size: 14px;
   text-align: center;
   margin-top: 10px;
+  min-height: 20px;
   animation: coup-fade 1.5s ease-in-out infinite;
 }
 
@@ -289,6 +321,52 @@
   opacity: 0.4;
   color: #888;
   font-size: 14px;
+}
+
+/* Exchange-drawn cards (Ambassador). Slight lift + dashed outline reads
+ * as "just drawn from the deck, not yet in hand" so the player can tell
+ * them apart from their 2 real hand cards. Same clickable behavior as
+ * hand cards during the return stages. */
+.coup-my-card.drawn {
+  border-style: dashed;
+  transform: translateY(-4px);
+}
+
+/* Clickable during exchange stages. Pulse + pointer so the affordance
+ * reads without a separate button row. */
+.coup-my-card.returnable {
+  cursor: pointer;
+  animation: coup-card-pulse 1.2s ease-in-out infinite;
+}
+.coup-my-card.returnable:hover {
+  transform: translateY(-10px);
+  box-shadow: 0 6px 18px rgba(255, 170, 0, 0.35);
+}
+.coup-my-card.drawn.returnable:hover {
+  transform: translateY(-14px);
+}
+@keyframes coup-card-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 170, 0, 0.0); }
+  50%      { box-shadow: 0 0 0 3px rgba(255, 170, 0, 0.55); }
+}
+
+.coup-exchange-hint {
+  color: #fa0;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+  animation: coup-fade 1.5s ease-in-out infinite;
+}
+
+/* Flying card sprite for the Ambassador return_card animation. */
+.anim-flying-card.coup-card-fly {
+  border: 2px solid #555;
+  border-radius: 8px;
+  background: #2a2a4a;
+  color: #eee;
+  font-size: 14px;
+  font-weight: 700;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
 }
 
 .coup-mycard-name {

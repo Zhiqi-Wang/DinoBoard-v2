@@ -383,12 +383,13 @@
   font-size: 0.9em;
 }
 
-/* Flying tile colors (animation) */
-.anim-flying-token.azul-blue { background: #2563eb; color: #fff; }
-.anim-flying-token.azul-yellow { background: #FFBF3C; color: #111; }
-.anim-flying-token.azul-red { background: #F5333F; color: #fff; }
-.anim-flying-token.azul-black { background: #111827; color: #fff; }
-.anim-flying-token.azul-white { background: #67E8F9; color: #111; }
+/* Flying tile colors (animation). Use the .anim-flying-tile
+ * (rounded-square) shape so sprites match board tiles mid-flight. */
+.anim-flying-tile.azul-blue { background: #2563eb; color: #fff; }
+.anim-flying-tile.azul-yellow { background: #FFBF3C; color: #111; }
+.anim-flying-tile.azul-red { background: #F5333F; color: #fff; }
+.anim-flying-tile.azul-black { background: #111827; color: #fff; }
+.anim-flying-tile.azul-white { background: #67E8F9; color: #111; }
 
 /* With 40px tiles, two 2p player boards side-by-side need ~944px. The
  * board-stage usually has ~728px free (1440 viewport - sidebar - info

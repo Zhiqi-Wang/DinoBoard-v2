@@ -85,12 +85,30 @@ button:hover { opacity: 0.92; }
   outline: 3px solid #fbbf24; outline-offset: 2px;
   transition: outline 0.2s;
 }
-.anim-flying-token {
-  border-radius: 50%;
+/* Shared defaults for every flight sprite. No shape here — the sprite
+ * gets its shape from a shape-specific class (.anim-flying-token for
+ * circular chips, .anim-flying-tile for rounded squares, .anim-flying-card
+ * for card-like rectangles). Putting `border-radius: 50%` here used to
+ * turn every 40px Azul tile into a circle mid-flight (and historically
+ * a Quoridor pawn into a square when a game forgot to restore it). The
+ * flying sprite must preserve the original object's silhouette. */
+.anim-flying-token,
+.anim-flying-tile,
+.anim-flying-card {
   display: flex; align-items: center; justify-content: center;
   font-weight: bold; font-size: 13px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+}
+/* Round chip — Splendor gems, Coup coins, etc. */
+.anim-flying-token {
+  border-radius: 50%;
   width: 36px; height: 36px;
+}
+/* Rounded square — Azul tiles and similar board pieces. Games can
+ * override width/height/border-radius on a subclass if their in-board
+ * element differs (e.g. 40px tiles with a 5px radius). */
+.anim-flying-tile {
+  border-radius: 5px;
 }
 .anim-flying-card {
   background: #f5f0e0; border: 2px solid #999;
@@ -111,6 +129,20 @@ button:hover { opacity: 0.92; }
 }
 .anim-popup.popup-penalty { color: #dc2626; text-shadow: 0 1px 3px rgba(255,255,255,0.9), 0 0 4px rgba(220,38,38,0.4); }
 .anim-popup.popup-bonus   { color: #d97706; font-size: 22px; text-shadow: 0 1px 3px rgba(255,255,255,0.95), 0 0 6px rgba(217,119,6,0.5); }
+/* Action-description bubble — text over an actor's player card so
+   information-only actions (Priest peek, Coup challenge) are visible. */
+.anim-popup.action-bubble {
+  color: #f8fafc;
+  font-size: 14px;
+  font-weight: 700;
+  text-shadow: none;
+  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(251, 191, 36, 0.65);
+  border-radius: 8px;
+  padding: 4px 10px;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+}
 
 /* Popup lifecycle (tuned so the number is readable before it fades):
  *   0-10%  fade in + pop up
@@ -127,6 +159,47 @@ button:hover { opacity: 0.92; }
   75%  { opacity: 1; transform: translateY(-6px) scale(1); }
   100% { opacity: 0; transform: translateY(-20px) scale(0.95); }
 }
+
+/* Private-info reveal modal — surfaces information a game action
+ * reveals privately to the perspective player (Love Letter Priest
+ * peek, Baron compare, etc.). Blocks the animation chain until the
+ * user clicks "知道了". Sits above the anim-overlay (z-index 10003)
+ * so it covers any mid-flight sprites. */
+.anim-reveal-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(15, 23, 42, 0.58);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 10003;
+  backdrop-filter: blur(2px);
+}
+.anim-reveal-panel {
+  min-width: 280px; max-width: 440px;
+  background: #fffef8;
+  border: 2px solid #94a3b8;
+  border-radius: 14px;
+  padding: 20px 22px 18px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  text-align: center;
+}
+.anim-reveal-title {
+  font-size: 17px; font-weight: 800; color: #0f172a;
+  letter-spacing: 0.02em;
+}
+.anim-reveal-body {
+  font-size: 14px; color: #1e293b; line-height: 1.45;
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+}
+.anim-reveal-btn {
+  margin-top: 4px;
+  min-width: 96px; height: 36px;
+  background: #0ea5e9; color: #fff;
+  border: none; border-radius: 8px;
+  font-size: 14px; font-weight: 700;
+  cursor: pointer;
+}
+.anim-reveal-btn:hover { background: #0284c7; }
+.anim-reveal-btn:focus-visible { outline: 2px solid #f59e0b; outline-offset: 2px; }
 
 /* Short highlight flash for completed row/column/color bonuses. */
 .anim-bonus-flash {

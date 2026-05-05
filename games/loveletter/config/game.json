@@ -34,7 +34,6 @@
     "warm_start_episodes": 2000,
     "warm_start_epochs": 5,
     "warm_start_temperature": 1.5,
-    "gating_accept_win_rate": 0.55,
     "heuristic_guidance_plies": 5,
     "heuristic_guidance_ratio": 0.2
   },

@@ -76,13 +76,16 @@ function makeEmptyTile() {
 
 function makeFlyingTile(colorIdx) {
   const el = document.createElement('div');
-  el.className = 'anim-flying-token azul-' + TILE_COLORS[colorIdx];
+  // Rounded-square sprite (.anim-flying-tile) to match the in-board
+  // tile silhouette. Using .anim-flying-token would force a circle.
+  el.className = 'anim-flying-tile azul-' + TILE_COLORS[colorIdx];
   return el;
 }
 
 function makeFlyingFPToken() {
+  // First-player marker is actually a square chip too — keep the tile shape.
   const el = document.createElement('div');
-  el.className = 'anim-flying-token';
+  el.className = 'anim-flying-tile';
   el.style.background = '#f8fafc';
   el.style.color = '#0f172a';
   el.style.fontWeight = '800';

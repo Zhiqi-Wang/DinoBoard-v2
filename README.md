@@ -78,14 +78,14 @@ Self-play, evaluation, web play, replay analysis — **all run on the same C++ M
 
 ## Games already shipped
 
-| Game | Players | Challenge | AI status |
-|------|---------|-----------|-----------|
-| **TicTacToe** | 2 | Minimal template | Superhuman (the game is forced-draw) |
-| **Quoridor** | 2 | Long horizon, highly strategic | Superhuman, with exact endgame solver |
-| **Splendor** | 2–4 | Symmetric randomness + blind reserved cards | Superhuman |
-| **Azul** | 2–4 | Bag draws (symmetric physical randomness) | Superhuman |
-| **Love Letter** | 2–4 | Asymmetric hidden info + player elimination + precise knowledge tracking | Superhuman |
-| **Coup** | 2–4 | Bluffing + 11-phase state machine + heuristic belief | Superhuman |
+| Game | Players | Challenge |
+|------|---------|-----------|
+| **TicTacToe** | 2 | Minimal template |
+| **Quoridor** | 2 | Long horizon, highly strategic |
+| **Splendor** | 2–4 | Symmetric randomness + blind reserved cards |
+| **Azul** | 2–4 | Bag draws (symmetric physical randomness) |
+| **Love Letter** | 2–4 | Asymmetric hidden info + player elimination + precise knowledge tracking |
+| **Coup** | 2–4 | Bluffing + 11-phase state machine + heuristic belief |
 
 Every game ships with a web frontend (animations, undo, smart hints, replay with per-move loss analysis).
 
@@ -269,3 +269,20 @@ DinoBoard/
 ├── docs/                           # Documentation
 └── setup.py · requirements.txt     # Build
 ```
+
+---
+
+## Model status
+
+Shipped ONNX models per variant:
+
+| Game | 2p | 3p | 4p |
+|------|----|----|----|
+| TicTacToe | trained | — | — |
+| Quoridor | trained | — | — |
+| Splendor | trained | **untrained (random init)** | **untrained (random init)** |
+| Azul | trained | **untrained (random init)** | **untrained (random init)** |
+| Love Letter | trained | trained | **untrained (random init)** |
+| Coup | trained | **untrained (random init)** | **untrained (random init)** |
+
+*Untrained* variants ship a randomly-initialized network — playable through the web UI but not competitive.

@@ -39,6 +39,23 @@ AnyMap serialize_coup(const IGameState& state) {
   m["challenger"] = std::any(d.challenger);
   m["deck_size"] = std::any(static_cast<int>(d.court_deck.size()));
 
+  // Exchange-drawn cards (Ambassador). Only exposed during the two
+  // exchange-return stages; outside those stages the field is
+  // default-zero and should not be confused with an actual drawn Duke.
+  // -1 means "slot already emptied during Return1". Frontend renders
+  // these as extra cards in the active player's hand during the return
+  // stages so the player sees 2 hand + 2 drawn = 4 cards and can click
+  // one to return.
+  std::vector<int> exchange_drawn;
+  if (d.stage == CoupStage::kExchangeReturn1 ||
+      d.stage == CoupStage::kExchangeReturn2) {
+    exchange_drawn.reserve(2);
+    for (int i = 0; i < 2; ++i) {
+      exchange_drawn.push_back(static_cast<int>(d.exchange_drawn[i]));
+    }
+  }
+  m["exchange_drawn"] = std::any(exchange_drawn);
+
   std::vector<AnyMap> players;
   for (int p = 0; p < NPlayers; ++p) {
     AnyMap pm;

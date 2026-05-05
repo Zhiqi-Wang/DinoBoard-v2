@@ -63,6 +63,8 @@ The AI decision pipeline — belief tracking, feature encoding, MCTS search — 
 
 ## Web Frontend Design
 
+**Before touching any web frontend code — new game or modification — read `docs/WEB_DESIGN_PRINCIPLES.md` and follow it. It is mandatory, not a style suggestion.** When you design a new game frontend, update the doc if you discover a new principle worth codifying for the next game; don't carry the lesson only in your head.
+
 Full visual/interaction guide: `docs/WEB_DESIGN_PRINCIPLES.md`.
 
 - Web frontend is mandatory. It is the primary interface for players to play and for the developer to verify training results.

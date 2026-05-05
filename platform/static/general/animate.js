@@ -26,6 +26,20 @@
  *   fadeOut   — fade an existing DOM element to transparent
  *   highlight — briefly add a CSS class to an element
  *   pause     — wait for a duration (for sequencing)
+ *   reveal    — blocking modal that shows information revealed privately
+ *               to the perspective player (e.g. Love Letter Priest peek
+ *               or Baron comparison). Animation resumes only when the
+ *               user clicks the acknowledge button. Use when an action's
+ *               outcome is information the player must actually see —
+ *               a passive popup is too easy to miss, especially when
+ *               multiple AI turns stack up. Fields:
+ *                 title    — modal heading
+ *                 body     — HTMLElement or HTML string describing what
+ *                            was revealed
+ *                 buttonText — optional, defaults to '知道了'
+ *                 timeoutMs  — optional auto-dismiss; omit for
+ *                            acknowledge-only (recommended — the whole
+ *                            point is forcing the player to see it)
  *
  * fly step fields:
  *   from         — CSS selector or HTMLElement (start position)
@@ -129,6 +143,60 @@ async function executeStep(overlay, step, hidden) {
     case 'fadeOut': return stepFadeOut(step);
     case 'highlight': return stepHighlight(step);
     case 'pause': return sleep(step.duration || 200);
+    case 'reveal': return stepReveal(step);
+  }
+}
+
+// Blocking modal used for private-info reveals (Priest peek, Baron
+// compare, etc.). Lives OUTSIDE the anim-overlay because the overlay
+// is pointer-events:none and gets removed when playTransition resolves;
+// the modal needs to be interactive and must close itself. We still
+// respect MAX_QUEUE_MS upstream — the modal's awaiting promise will be
+// abandoned if the deadline hits before the user clicks, but the DOM is
+// cleaned up in a finally.
+async function stepReveal(step) {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'anim-reveal-backdrop';
+  const panel = document.createElement('div');
+  panel.className = 'anim-reveal-panel' + (step.className ? (' ' + step.className) : '');
+  if (step.title) {
+    const h = document.createElement('div');
+    h.className = 'anim-reveal-title';
+    h.textContent = step.title;
+    panel.appendChild(h);
+  }
+  const bodyEl = document.createElement('div');
+  bodyEl.className = 'anim-reveal-body';
+  if (step.body instanceof HTMLElement) {
+    bodyEl.appendChild(step.body);
+  } else if (typeof step.body === 'string') {
+    bodyEl.innerHTML = step.body;
+  }
+  panel.appendChild(bodyEl);
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'anim-reveal-btn';
+  btn.textContent = step.buttonText || '知道了';
+  panel.appendChild(btn);
+  backdrop.appendChild(panel);
+  document.body.appendChild(backdrop);
+
+  try {
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; resolve(); };
+      btn.addEventListener('click', finish);
+      // Backdrop click does NOT dismiss — we want the player to make a
+      // deliberate acknowledgement. An errant mouse move shouldn't hide
+      // the only reveal they get.
+      if (step.timeoutMs && step.timeoutMs > 0) {
+        setTimeout(finish, step.timeoutMs);
+      }
+      btn.focus();
+    });
+  } finally {
+    backdrop.remove();
   }
 }
 

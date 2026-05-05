@@ -125,6 +125,17 @@
 
 .dev-card-placeholder { border-style: dashed; opacity: 0.35; }
 .dev-card.clickable { cursor: pointer; }
+.dev-card-hidden {
+  background: linear-gradient(135deg, #2c4c6d 0%, #16304d 100%);
+  border-color: rgba(255, 255, 255, 0.45);
+  color: #dfe9f5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: 2px;
+}
 
 .dev-card-head {
   display: flex;

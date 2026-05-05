@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import shutil
 import time
 from collections import deque
@@ -15,6 +16,23 @@ import torch
 from .model import PVNet, create_model_from_config, export_onnx
 
 logger = logging.getLogger(__name__)
+
+
+def _default_gating_threshold(num_players: int, eval_games: int) -> float:
+    """Default gating win-rate threshold, scaled to the N-player null baseline.
+
+    For an N-player zero-sum game the null hypothesis is 1/N (no skill edge),
+    not 0.5. A fixed 0.55 threshold is tight for 2p but trivially loose for
+    3p/4p (null already at 0.333 / 0.25). We use
+        threshold = baseline + z * sqrt(baseline * (1 - baseline) / n_games)
+    with z calibrated so (num_players=2, eval_games=40) recovers the historical
+    0.55 default. Gives roughly 2p: 0.55, 3p: 0.38, 4p: 0.29 at 40 eval games —
+    the same one-sided confidence lead over the null across player counts.
+    """
+    baseline = 1.0 / max(num_players, 1)
+    z = 0.632  # (0.55 - 0.5) / sqrt(0.25 / 40)
+    se = math.sqrt(baseline * (1.0 - baseline) / max(eval_games, 1))
+    return baseline + z * se
 
 
 def _get_temperature_key(train_cfg: dict, key: str, default):
@@ -583,7 +601,9 @@ def run_training_loop(
             logger.info(
                 f"  gating vs best: win_rate={gating_wr:.1%} "
                 f"(W={gating_result['wins']}, L={gating_result['losses']}, D={gating_result['draws']})")
-            gating_threshold = train_cfg.get("gating_accept_win_rate", 0.55)
+            gating_threshold = train_cfg.get(
+                "gating_accept_win_rate",
+                _default_gating_threshold(num_players, eval_games))
             if gating_wr >= gating_threshold:
                 best_onnx = models_dir / "model_best.onnx"
                 shutil.copy2(eval_model, best_onnx)

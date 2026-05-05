@@ -115,6 +115,18 @@ void CoupFeatureEncoder<NPlayers>::encode_private(
   // unrevealed character counts. Only the owner (pid == player) knows
   // their own unrevealed cards; for others we output zeros to avoid
   // leaking opp hidden info.
+  //
+  // During Ambassador exchange return stages the active player also
+  // physically holds up to 2 extra drawn cards from the court deck.
+  // They must be visible to the policy/value head, otherwise the
+  // network picks between "return X" actions without knowing what X
+  // actually is in its hand. Merging the drawn cards into the same
+  // 5-bucket multiset is sufficient: the decision "which 2 of up to 4
+  // to keep" depends only on the multiset of characters owned.
+  const bool self_exchanging =
+      (d.stage == CoupStage::kExchangeReturn1 ||
+       d.stage == CoupStage::kExchangeReturn2) &&
+      d.active_player == player;
   for (int pi = 0; pi < NPlayers; ++pi) {
     const int pid = (player + pi) % NPlayers;
     const bool is_self = (pid == player);
@@ -123,6 +135,11 @@ void CoupFeatureEncoder<NPlayers>::encode_private(
         int count = 0;
         for (int sl = 0; sl < 2; ++sl) {
           if (!d.revealed[pid][sl] && d.influence[pid][sl] == c) ++count;
+        }
+        if (self_exchanging) {
+          for (int i = 0; i < 2; ++i) {
+            if (d.exchange_drawn[i] == c) ++count;
+          }
         }
         out->push_back(static_cast<float>(count));
       } else {
@@ -365,8 +382,17 @@ void CoupBeliefTracker<NPlayers>::randomize_unseen(
       if (c == 0) { weights[r] = 0.0; continue; }
       double prior = 1.0;
       if (slot.owner >= 0 && slot.owner < NPlayers) {
-        prior += kSignalAlpha *
-                 static_cast<double>(signals_[slot.owner][r]);
+        int effective_signal = signals_[slot.owner][r];
+        // Boost the pending (unresolved) claim: the claimer just said they
+        // hold this role but it hasn't been challenged/allowed yet. Weight
+        // it as 2 signal units so MCTS determinization at this node already
+        // reflects "they probably really have it".
+        if (!pending_challenged_ &&
+            pending_claimer_ == slot.owner &&
+            pending_claim_role_ == r) {
+          effective_signal += 2;
+        }
+        prior += kSignalAlpha * static_cast<double>(effective_signal);
       }
       weights[r] = static_cast<double>(c) * prior;
       total += weights[r];

@@ -594,6 +594,79 @@ function cloneCardEl(selector) {
   return clone;
 }
 
+const CARD_FLY_MS = 550;
+const TOKEN_FLY_MS = 400;
+
+function makeHiddenCardFlyer(tier) {
+  const el = document.createElement('div');
+  el.className = 'dev-card dev-card-hidden';
+  el.textContent = 'T' + ((tier || 0) + 1);
+  return el;
+}
+
+// After a reserve fly finishes, the destination slot in the DOM is still
+// the "empty" placeholder — and the flyer sprite is removed by animate.js.
+// If a *subsequent* animation step plays (e.g. the deck→tableau refill),
+// the user sees a gap where the just-reserved card should be. Paint the
+// slot into a persistent static representation so the intermediate state
+// survives until the caller re-renders the real DOM. See §3 "中间状态维护"
+// in docs/WEB_DESIGN_PRINCIPLES.md.
+function paintReserveSlotFromCard(selector, sourceCardSelector) {
+  const slot = document.querySelector(selector);
+  if (!slot) return;
+  const src = document.querySelector(sourceCardSelector);
+  if (!src) return;
+  // Replace the empty placeholder class so the slot renders as a card
+  // (.reserve-slot-empty has dashed borders + "空" text that would show
+  // through otherwise). Copy the source card's innerHTML — contents are
+  // the visible card face — and strip interactive affordances.
+  slot.className = 'dev-card';
+  slot.innerHTML = src.innerHTML;
+  slot.querySelectorAll('button').forEach(b => b.remove());
+  slot.classList.remove('clickable');
+  slot.style.pointerEvents = 'none';
+}
+
+function paintReserveSlotHidden(selector, tier) {
+  const slot = document.querySelector(selector);
+  if (!slot) return;
+  slot.className = 'dev-card dev-card-hidden';
+  slot.textContent = 'T' + ((tier || 0) + 1);
+}
+
+function refillStepsFromDeck(prev, next) {
+  // When a tableau slot is taken (buy_faceup / reserve_faceup), the engine
+  // deals a replacement from the deck. Add a deck→slot fly for each tier
+  // whose deck_sizes dropped by 1 and whose tableau got a new card.
+  const refills = [];
+  const prevDecks = prev.deck_sizes || [];
+  const nextDecks = next.deck_sizes || [];
+  for (let t = 0; t < 3; t++) {
+    const drew = (prevDecks[t] || 0) - (nextDecks[t] || 0);
+    if (drew <= 0) continue;
+    const prevRow = (prev.tableau && prev.tableau[t]) || [];
+    const nextRow = (next.tableau && next.tableau[t]) || [];
+    // Tier's refill fills whichever slot position ended up with a new card;
+    // we animate by slot index — if a specific slot was taken, the deck
+    // refills that position.
+    const len = Math.max(prevRow.length, nextRow.length);
+    for (let s = 0; s < len; s++) {
+      const pc = prevRow[s];
+      const nc = nextRow[s];
+      const changed = !pc || !nc || pc.id !== nc.id || pc.bonus !== nc.bonus || pc.points !== nc.points;
+      if (!changed) continue;
+      refills.push({
+        from: `[data-deck="${t}"]`,
+        to: `[data-tableau="${t}-${s}"]`,
+        createElement: () => makeHiddenCardFlyer(t),
+        duration: CARD_FLY_MS,
+      });
+      break; // one refill per draw
+    }
+  }
+  return refills;
+}
+
 function describeTransition(prevState, newState, actionInfo, actionId) {
   if (!actionInfo || !actionInfo.type) return null;
   if (!prevState || !prevState.state || !newState || !newState.state) return null;
@@ -607,14 +680,13 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
     case 'take_three':
     case 'take_two_different': {
       const colors = actionInfo.colors || [];
-      for (const c of colors) {
-        steps.push({
-          type: 'fly',
-          from: `[data-bank-gem="${c}"]`,
-          to: `[data-player-gem="${actor}-${c}"]`,
-          createElement: () => makeFlyingToken(c),
-        });
-      }
+      const flights = colors.map(c => ({
+        from: `[data-bank-gem="${c}"]`,
+        to: `[data-player-gem="${actor}-${c}"]`,
+        createElement: () => makeFlyingToken(c),
+        duration: TOKEN_FLY_MS,
+      }));
+      if (flights.length) steps.push({ type: 'flyGroup', flights });
       break;
     }
 
@@ -626,6 +698,7 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
           from: `[data-bank-gem="${c}"]`,
           to: `[data-player-gem="${actor}-${c}"]`,
           createElement: () => makeFlyingToken(c),
+          duration: TOKEN_FLY_MS,
         });
       }
       break;
@@ -634,43 +707,46 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
     case 'take_two_same': {
       const c = actionInfo.color;
       if (c != null) {
-        for (let i = 0; i < 2; i++) {
-          steps.push({
-            type: 'fly',
-            from: `[data-bank-gem="${c}"]`,
-            to: `[data-player-gem="${actor}-${c}"]`,
-            createElement: () => makeFlyingToken(c),
-          });
-        }
+        const flights = [0, 1].map(() => ({
+          from: `[data-bank-gem="${c}"]`,
+          to: `[data-player-gem="${actor}-${c}"]`,
+          createElement: () => makeFlyingToken(c),
+          duration: TOKEN_FLY_MS,
+        }));
+        steps.push({ type: 'flyGroup', flights });
       }
       break;
     }
 
     case 'buy_faceup': {
-      gemReturnSteps(steps, prev, next, actor);
+      const gemFlights = gemReturnFlights(prev, next, actor);
       const fromSel = `[data-tableau="${actionInfo.tier}-${actionInfo.slot}"]`;
-      steps.push({
-        type: 'fly',
+      const cardFlight = {
         from: fromSel,
         to: `[data-player="${actor}"] .bonus-row`,
         createElement: () => cloneCardEl(fromSel),
         hideFrom: true,
-        duration: 450,
-      });
+        duration: CARD_FLY_MS,
+      };
+      steps.push({ type: 'flyGroup', flights: [...gemFlights, cardFlight] });
+      // After the taken slot is hidden, fly a replacement from the deck
+      // into the same slot so players see the refill explicitly.
+      const refills = refillStepsFromDeck(prev, next);
+      if (refills.length) steps.push({ type: 'flyGroup', flights: refills });
       break;
     }
 
     case 'buy_reserved': {
-      gemReturnSteps(steps, prev, next, actor);
+      const gemFlights = gemReturnFlights(prev, next, actor);
       const fromSel = `[data-reserved="${actor}-${actionInfo.slot}"]`;
-      steps.push({
-        type: 'fly',
+      const cardFlight = {
         from: fromSel,
         to: `[data-player="${actor}"] .bonus-row`,
         createElement: () => cloneCardEl(fromSel),
         hideFrom: true,
-        duration: 450,
-      });
+        duration: CARD_FLY_MS,
+      };
+      steps.push({ type: 'flyGroup', flights: [...gemFlights, cardFlight] });
       break;
     }
 
@@ -681,38 +757,65 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
       const prevReserved = (prev.players[actor].reserved || []).length;
       const fromSel = `[data-tableau="${actionInfo.tier}-${actionInfo.slot}"]`;
       const toSel = `[data-player="${actor}"] [data-reserved="${actor}-${prevReserved}"]`;
-      steps.push({
-        type: 'fly',
+      // Keep a pre-flight clone around so that after the tableau source is
+      // hidden we can still reconstruct the reserved card into the empty
+      // slot during onComplete (prevents the "reserved card disappears
+      // mid-deck-refill" bug — see §3 中间状态维护 in web-design-principles).
+      const preservedCardSel = fromSel;
+      const cardFlight = {
         from: fromSel,
         to: toSel,
         createElement: () => cloneCardEl(fromSel),
         hideFrom: true,
-        duration: 450,
-      });
+        duration: CARD_FLY_MS,
+        onComplete: () => paintReserveSlotFromCard(toSel, preservedCardSel),
+      };
+      const flights = [cardFlight];
       const prevGold = (prev.players[actor].gems || [])[5] || 0;
       const nextGold = (next.players[actor].gems || [])[5] || 0;
       if (nextGold > prevGold) {
-        steps.push({
-          type: 'fly',
+        flights.push({
           from: '[data-bank-gem="5"]',
           to: `[data-player-gem="${actor}-5"]`,
           createElement: () => makeFlyingToken(5),
+          duration: TOKEN_FLY_MS,
         });
       }
+      steps.push({ type: 'flyGroup', flights });
+      // Refill the vacated tableau slot from the deck.
+      const refills = refillStepsFromDeck(prev, next);
+      if (refills.length) steps.push({ type: 'flyGroup', flights: refills });
       break;
     }
 
     case 'reserve_deck': {
+      const prevReserved = (prev.players[actor].reserved || []).length;
+      const toSel = `[data-player="${actor}"] [data-reserved="${actor}-${prevReserved}"]`;
+      const tier = actionInfo.tier;
+      const flights = [{
+        from: `[data-deck="${actionInfo.tier}"]`,
+        to: toSel,
+        createElement: () => makeHiddenCardFlyer(tier),
+        duration: CARD_FLY_MS,
+        // Keep a hidden-card placeholder in the reserve slot so later
+        // flights (e.g. gold coin from the bank) don't leave a visual gap
+        // where the reserved card should be. Opponents' reserves from the
+        // deck are rendered as `.reserve-hidden` in steady state, but for
+        // the intermediate animation state using the same hidden-card
+        // visual is fine — re-render replaces it anyway.
+        onComplete: () => paintReserveSlotHidden(toSel, tier),
+      }];
       const prevGold = (prev.players[actor].gems || [])[5] || 0;
       const nextGold = (next.players[actor].gems || [])[5] || 0;
       if (nextGold > prevGold) {
-        steps.push({
-          type: 'fly',
+        flights.push({
           from: '[data-bank-gem="5"]',
           to: `[data-player-gem="${actor}-5"]`,
           createElement: () => makeFlyingToken(5),
+          duration: TOKEN_FLY_MS,
         });
       }
+      steps.push({ type: 'flyGroup', flights });
       break;
     }
 
@@ -724,7 +827,7 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
         to: `[data-player="${actor}"]`,
         createElement: () => cloneCardEl(fromSel),
         hideFrom: true,
-        duration: 500,
+        duration: CARD_FLY_MS,
       });
       break;
     }
@@ -737,6 +840,7 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
           from: `[data-player-gem="${actor}-${c}"]`,
           to: `[data-bank-gem="${c}"]`,
           createElement: () => makeFlyingToken(c),
+          duration: TOKEN_FLY_MS,
         });
       }
       break;
@@ -744,6 +848,24 @@ function describeTransition(prevState, newState, actionInfo, actionId) {
   }
 
   return steps.length ? steps : null;
+}
+
+function gemReturnFlights(prev, next, actor) {
+  const flights = [];
+  const prevGems = prev.players[actor].gems || [];
+  const nextGems = next.players[actor].gems || [];
+  for (let c = 0; c < 6; c++) {
+    const spent = (prevGems[c] || 0) - (nextGems[c] || 0);
+    for (let i = 0; i < spent; i++) {
+      flights.push({
+        from: `[data-player-gem="${actor}-${c}"]`,
+        to: `[data-bank-gem="${c}"]`,
+        createElement: () => makeFlyingToken(c),
+        duration: TOKEN_FLY_MS,
+      });
+    }
+  }
+  return flights;
 }
 
 function gemReturnSteps(steps, prev, next, actor) {
@@ -757,6 +879,7 @@ function gemReturnSteps(steps, prev, next, actor) {
         from: `[data-player-gem="${actor}-${c}"]`,
         to: `[data-bank-gem="${c}"]`,
         createElement: () => makeFlyingToken(c),
+        duration: TOKEN_FLY_MS,
       });
     }
   }

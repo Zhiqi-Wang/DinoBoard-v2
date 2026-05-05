@@ -41,10 +41,18 @@ class ActionRequest(BaseModel):
     action_id: int
 
 
+_GAME_DISPLAY_ORDER = ["azul", "splendor", "quoridor", "loveletter", "coup", "tictactoe"]
+
+
 @router.get("/available")
 def available_games():
+    order_index = {gid: i for i, gid in enumerate(_GAME_DISPLAY_ORDER)}
+    sorted_items = sorted(
+        GAME_CONFIGS.items(),
+        key=lambda kv: (order_index.get(kv[0], len(_GAME_DISPLAY_ORDER)), kv[0]),
+    )
     games = []
-    for gid, cfg in GAME_CONFIGS.items():
+    for gid, cfg in sorted_items:
         has_web = (PROJECT_ROOT / "games" / gid / "web" / "index.html").exists()
         games.append({
             "game_id": gid,

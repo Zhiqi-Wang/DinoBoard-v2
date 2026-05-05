@@ -109,44 +109,74 @@
 .ll-opp-status.status-eliminated { color: #b91c1c; }
 .ll-opp-status.status-turn { color: #0284c7; }
 
-.ll-opp-discards {
+/* Discard pile — a row of small card-shaped chips. The trailing
+ * .incoming-slot is an empty placeholder that lets describeTransition
+ * land a flying card at the correct position before the next
+ * re-render adds the real card chip. Opponent piles sit below their
+ * status; mine sits below my hand (see .mine overrides below). */
+.ll-discard-pile {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
   justify-content: center;
   margin-top: auto;
-  min-height: 24px;
+  min-height: 52px;
+  padding: 2px;
 }
 
-.ll-discard-chip {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 28px;
-  height: 22px;
-  padding: 0 6px;
-  font-size: 12px;
-  font-weight: 700;
-  border-radius: 999px;
-  color: #f8fafc;
-  background: #475569;
+.ll-discard-card {
+  width: 34px;
+  height: 48px;
+  border-radius: 5px;
   border: 1px solid rgba(15, 23, 42, 0.25);
+  background: #fffef8;
+  color: #0f172a;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 3px 2px 2px;
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
 }
 
-/* Card-color accents on discard chips so it's easy to scan which cards
- * have been played. Matches the hand-card left-stripe colors. */
-.ll-discard-chip.card-1 { background: #3b82f6; }
-.ll-discard-chip.card-2 { background: #22c55e; color: #052e16; }
-.ll-discard-chip.card-3 { background: #f59e0b; color: #1e1a00; }
-.ll-discard-chip.card-4 { background: #8b5cf6; }
-.ll-discard-chip.card-5 { background: #06b6d4; color: #052830; }
-.ll-discard-chip.card-6 { background: #eab308; color: #1c1400; }
-.ll-discard-chip.card-7 { background: #ec4899; }
-.ll-discard-chip.card-8 { background: #ef4444; }
+.ll-discard-card-value {
+  font-size: 14px;
+  line-height: 1;
+}
 
-.ll-discard-chip.mine {
-  border-color: #0284c7;
-  box-shadow: 0 0 0 1px #0ea5e9;
+.ll-discard-card-name {
+  font-size: 9px;
+  line-height: 1;
+  margin-top: 2px;
+  color: #334155;
+  white-space: nowrap;
+}
+
+/* Empty incoming slot — reserves space for a landing card. Faint
+ * outline so users read it as "the next card will land here". */
+.ll-discard-card.incoming-slot {
+  border: 1px dashed rgba(15, 23, 42, 0.2);
+  background: transparent;
+  box-shadow: none;
+}
+
+/* Card-color accents. Matches the hand-card left-stripe colors. */
+.ll-discard-card.card-1 { border-left: 4px solid #3b82f6; background: #eff6ff; }
+.ll-discard-card.card-2 { border-left: 4px solid #22c55e; background: #f0fdf4; }
+.ll-discard-card.card-3 { border-left: 4px solid #f59e0b; background: #fffbeb; }
+.ll-discard-card.card-4 { border-left: 4px solid #8b5cf6; background: #f5f3ff; }
+.ll-discard-card.card-5 { border-left: 4px solid #06b6d4; background: #ecfeff; }
+.ll-discard-card.card-6 { border-left: 4px solid #eab308; background: #fefce8; }
+.ll-discard-card.card-7 { border-left: 4px solid #ec4899; background: #fdf2f8; }
+.ll-discard-card.card-8 { border-left: 4px solid #ef4444; background: #fef2f2; }
+
+.ll-discard-pile.mine {
+  padding: 4px;
+  background: rgba(14, 165, 233, 0.08);
+  border: 1px dashed rgba(14, 165, 233, 0.4);
+  border-radius: 8px;
+  min-height: 58px;
 }
 
 /* Guard guess panel — one row per valid target, row contains value
@@ -214,19 +244,18 @@
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
 }
 
-.ll-my-discards {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  min-height: 28px;
-  justify-content: center;
+/* Prince / fallback self-target highlight on the human's own player area.
+ * Matches the opponent .selectable style so the affordance reads
+ * consistently. */
+.ll-player-area.selectable-self {
+  cursor: pointer;
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.35);
+  animation: ll-pulse-border 1.2s ease-in-out infinite;
 }
 
-.ll-discard-label {
-  color: #475569;
-  font-size: 12px;
-  font-weight: 700;
+.ll-player-area.selectable-self:hover {
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.6), 0 0 14px rgba(245, 158, 11, 0.35);
 }
 
 /* Fixed min-height so the hand row doesn't collapse between draw and
@@ -368,6 +397,28 @@
   color: #0f172a;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
 }
+
+/* Reveal-modal card chips (Priest peek / Baron compare). Shared size
+ * across the chips so side-by-side Baron comparison reads cleanly. */
+.ll-reveal-card {
+  width: 92px; min-height: 132px;
+  background: #fffef8;
+  border: 2px solid #94a3b8;
+  border-radius: 10px;
+  padding: 10px 8px;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.15);
+}
+.ll-reveal-card.card-1 { border-left: 6px solid #3b82f6; background: linear-gradient(135deg, #e0ecff 0%, #fffef8 55%); }
+.ll-reveal-card.card-2 { border-left: 6px solid #22c55e; background: linear-gradient(135deg, #dcfce7 0%, #fffef8 55%); }
+.ll-reveal-card.card-3 { border-left: 6px solid #f59e0b; background: linear-gradient(135deg, #fef3c7 0%, #fffef8 55%); }
+.ll-reveal-card.card-4 { border-left: 6px solid #8b5cf6; background: linear-gradient(135deg, #ede9fe 0%, #fffef8 55%); }
+.ll-reveal-card.card-5 { border-left: 6px solid #06b6d4; background: linear-gradient(135deg, #cffafe 0%, #fffef8 55%); }
+.ll-reveal-card.card-6 { border-left: 6px solid #eab308; background: linear-gradient(135deg, #fef9c3 0%, #fffef8 55%); }
+.ll-reveal-card.card-7 { border-left: 6px solid #ec4899; background: linear-gradient(135deg, #fce7f3 0%, #fffef8 55%); }
+.ll-reveal-card.card-8 { border-left: 6px solid #ef4444; background: linear-gradient(135deg, #fee2e2 0%, #fffef8 55%); }
+.ll-reveal-card-value { font-size: 26px; font-weight: 800; color: #0f172a; line-height: 1; }
+.ll-reveal-card-name { font-size: 13px; font-weight: 700; color: #0f172a; }
 
 .anim-flying-card.ll-card-fly.card-1 { border-left: 5px solid #3b82f6; }
 .anim-flying-card.ll-card-fly.card-2 { border-left: 5px solid #22c55e; }

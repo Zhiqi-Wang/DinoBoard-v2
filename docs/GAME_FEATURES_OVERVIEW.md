@@ -248,7 +248,7 @@ general 层统一实现，游戏前端不需要额外代码：
 | `training.temperature*` | 温度及衰减 schedule |
 | `training.tail_solve_*` | 残局求解开关和预算 |
 | `training.heuristic_guidance_*` | 启发式引导步数和概率 |
-| `training.gating_accept_win_rate` | gating 晋升阈值 |
+| `training.gating_accept_win_rate` | gating 晋升阈值。缺省时按 `1/N + z·SE` 自适应（2p≈0.55，3p≈0.38，4p≈0.29，见 Guide §7.3） |
 | `network.hidden_layers` | MLP 隐层大小 |
 
 ### web.json — Web 平台配置（可选）
