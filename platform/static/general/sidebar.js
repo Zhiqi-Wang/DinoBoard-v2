@@ -34,7 +34,7 @@ export function createSidebar(sidebarEl, config, callbacks) {
   }
 
   sidebarEl.innerHTML = `
-    <h1>DinoBoard</h1>
+    <h1><a href="/" style="color: inherit; text-decoration: none;" title="返回首页">DinoBoard</a></h1>
     <div class="game-switcher-wrap">
       <label for="game-selector">切换游戏</label>
       <select id="game-selector"></select>
