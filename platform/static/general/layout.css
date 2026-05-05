@@ -512,11 +512,15 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 
 /* --- Responsive --- */
 
+/* Narrow laptops — shrink the sidebar, keep the toggle visible on the
+ * left edge. Never stack vertically: on a phone the sidebar-on-top layout
+ * buries the board content below a full-height nav the user has to
+ * scroll through, and on tablets it just wastes vertical space. The
+ * toggle handle makes it collapsible so the full screen is always
+ * reachable. */
 @media (max-width: 1200px) {
-  .layout { grid-template-columns: 1fr; }
-  .layout.sidebar-collapsed { grid-template-columns: 1fr; }
-  .sidebar { max-height: none; }
-  .sidebar-toggle { display: none; }
+  .layout { grid-template-columns: 280px 1fr; }
+  .sidebar-toggle { left: 280px; }
 }
 
 @media (max-width: 900px) {
@@ -528,4 +532,24 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
     min-height: 0;
     max-height: 400px;
   }
+}
+
+/* Phone: sidebar overlays the board instead of stealing grid space.
+ * Without this, a 240px sidebar on a 375px phone leaves only 135px for
+ * the board. Collapsing it by default lets users tap the toggle handle
+ * to slide it in/out. */
+@media (max-width: 720px) {
+  .layout { grid-template-columns: 1fr; }
+  .layout:not(.sidebar-collapsed) .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 260px;
+    height: 100vh;
+    z-index: 500;
+    box-shadow: 4px 0 20px rgba(0, 0, 0, 0.35);
+  }
+  .sidebar-toggle { left: 260px; }
+  .layout.sidebar-collapsed ~ .sidebar-toggle,
+  .sidebar-toggle.collapsed { left: 0; }
 }

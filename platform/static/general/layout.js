@@ -84,6 +84,15 @@ export function buildLayout() {
     toggle.textContent = collapsed ? '▶' : '◀';
   });
 
+  // On phone-size viewports collapse the sidebar by default so the board
+  // gets the whole screen. The toggle handle is still visible on the
+  // left edge for reveal.
+  if (window.matchMedia && window.matchMedia('(max-width: 720px)').matches) {
+    main.classList.add('sidebar-collapsed');
+    toggle.classList.add('collapsed');
+    toggle.textContent = '▶';
+  }
+
   injectZoomControls(content);
 
   return { sidebar, boardCol, infoCol, playerArea, stage };
