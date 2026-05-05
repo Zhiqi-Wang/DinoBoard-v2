@@ -76,8 +76,19 @@ library_dirs = []
 libraries = []
 
 if with_onnx == "":
-    # Auto-detect: try common homebrew path, then check env
-    for candidate in ["/opt/homebrew", "/usr/local"]:
+    # Auto-detect ONNX Runtime in priority order:
+    #   1. Bundled copy under `third_party/onnxruntime-<platform>-<arch>-<ver>/`
+    #      — ships with the repo so Linux deploys only need `git clone`, no
+    #      external downloads (and no cloud-firewall interference).
+    #   2. Homebrew (Mac dev machines): /opt/homebrew or /usr/local.
+    candidates = []
+    third_party = ROOT / "third_party"
+    if third_party.is_dir():
+        for p in sorted(third_party.glob("onnxruntime-*")):
+            if (p / "include" / "onnxruntime_c_api.h").exists():
+                candidates.append(str(p))
+    candidates.extend(["/opt/homebrew", "/usr/local"])
+    for candidate in candidates:
         if ((Path(candidate) / "include" / "onnxruntime_c_api.h").exists()
                 or (Path(candidate) / "include" / "onnxruntime" / "onnxruntime_c_api.h").exists()):
             onnx_root = onnx_root or candidate
@@ -101,6 +112,21 @@ if with_onnx:
 else:
     print("WARNING: Building without ONNX runtime. MCTS will use uniform policy (no neural network guidance).")
 
+# rpath so the compiled extension finds the bundled libonnxruntime.so at
+# runtime without requiring LD_LIBRARY_PATH to be set by the caller.
+# $ORIGIN expands to the directory of the extension itself; the .so gets
+# installed to site-packages/, and the bundled ORT lives at
+# <repo>/third_party/onnxruntime-*/lib relative to the build dir — but in
+# editable installs the extension is dropped next to setup.py, so
+# $ORIGIN/third_party/<dir>/lib is the stable relative path.
+extra_link_args = []
+if with_onnx and onnx_root and sys.platform.startswith("linux"):
+    ort_lib_dir = Path(onnx_root) / "lib"
+    # Absolute rpath is simplest and works for editable installs. If the
+    # user moves the repo after install they'll need to rebuild; that's
+    # fine since pip install -e . is how everyone rebuilds anyway.
+    extra_link_args.append(f"-Wl,-rpath,{ort_lib_dir}")
+
 ext = Extension(
     name="dinoboard_engine",
     sources=[str(ROOT / s) for s in sources],
@@ -110,7 +136,7 @@ ext = Extension(
     define_macros=define_macros,
     language="c++",
     extra_compile_args=[],
-    extra_link_args=[],
+    extra_link_args=extra_link_args,
 )
 
 setup(
